@@ -16,3 +16,6 @@ Thumbs.db
 .env.*
 *.log
 node_modules/
+
+# Personal interview-prep notes
+PROJECT_DOSSIER.md
