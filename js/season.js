@@ -42,9 +42,9 @@ const Season = (() => {
     return { fixtures: out, groups: [A, B] };
   }
 
-  function create(teams, userId) { // teams: [{id, short, name, squad:[p], sel}]
+  function create(teams, userId, year) { // teams: [{id, short, name, squad:[p], sel}]
     const S = { teams: {}, ids: [], fixtures: [], idx: 0, table: {}, stats: new Map(), playoffs: [], phase: 'league', champion: null, runnerUp: null, results: [], highlights: { hi: null, lo: null, bestBowl: null, bigWin: null },
-      userId, form: {}, inj: {}, news: [] };
+      userId, year: year || 2027, form: {}, inj: {}, news: [] };
     for (const t of teams) {
       const side = { id: t.id, short: t.short, name: t.name, sel: t.sel, squad: t.squad, user: t.id === userId };
       side.prepared = E.prepare(side);
@@ -80,7 +80,7 @@ const Season = (() => {
       impact = fit(impact, ovsAfter < 4) || null; if (impact) used.add(impact.id); else replaced = null;
     }
     const captain = xi.includes(sel.captain) ? sel.captain : E.pickCaptain(xi);
-    const out = { xi, impact, replaced, captain };
+    const out = { xi, impact, replaced, captain, batOrder: sel.batOrder, bowlPlan: sel.bowlPlan };
     return E.validateSelection(out).errs.length ? null : out;
   }
   function todaysSide(S, id) {
@@ -232,7 +232,7 @@ const Season = (() => {
     const [q1, el, q2, fin] = S.playoffs;
     let label = `Finished ${ordinal(pos)} in the league`, rank = pos, emoji = '😐';
     if (S.phase === 'done') {
-      if (S.champion === id) { label = 'IPL 2027 CHAMPIONS!'; rank = 1; emoji = '🏆'; }
+      if (S.champion === id) { label = `IPL ${S.year} CHAMPIONS!`; rank = 1; emoji = '🏆'; }
       else if (S.runnerUp === id) { label = 'Runners-up — lost the Final'; rank = 2; emoji = '🥈'; }
       else if (q2 && q2.result && q2.result.loser === id) { label = 'Knocked out in Qualifier 2'; rank = 3; emoji = '😢'; }
       else if (el && el.result && el.result.loser === id) { label = 'Knocked out in the Eliminator'; rank = 4; emoji = '💔'; }
@@ -255,10 +255,10 @@ const Season = (() => {
   function mvpPts(s) { return Math.round(s.r * 1 + s.f4 * 1 + s.f6 * 2 + s.wk * 25 + s.dots * 1 + s.motm * 10); }
 
   /* -------- Monte-Carlo forecast (league + playoffs) -------- */
-  function forecast(teams, n = 200, userId) {
+  function forecast(teams, n = 200, userId, year) {
     const out = Object.fromEntries(teams.map(t => [t.id, { id: t.id, pos: 0, top4: 0, title: 0, pts: 0 }]));
     for (let k = 0; k < n; k++) {
-      const S = create(teams, userId);
+      const S = create(teams, userId, year);
       while (S.phase !== 'done') {
         const fx = nextFixture(S);
         play(S, fx, false, true);

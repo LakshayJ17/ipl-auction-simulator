@@ -14,6 +14,7 @@ const Auction = (() => {
 
   const inc = cur => cur < 100 ? 5 : cur < 200 ? 10 : cur < 300 ? 20 : 25;
   function fmt(l) {
+    if (l < 0) return '−' + fmt(-l);
     if (l >= 100) return '₹' + (l / 100).toFixed(2).replace(/\.?0+$/, '') + ' Cr';
     return '₹' + l + ' L';
   }
@@ -307,7 +308,7 @@ const Auction = (() => {
     }
     let empty = 0;
     for (const s of Object.keys(left)) for (let j = 0; j < left[s]; j++) empty += fallback ? fallback[s](j) : EMPTY_SLOT;
-    return { score: sum + empty, filled: n, left };
+    return { score: sum + empty, filled: n, left, used };
   }
   const BENCH = { WK: 2, BAT: 5, AR: 4, PACE: 5, SPIN: 3 }; // sensible cover for injuries
   function managerValue(T, p) {
@@ -502,7 +503,7 @@ const Auction = (() => {
       // skip players that cannot be bought by anyone (should not happen)
       await runLot(e);
       emit('onUpdate');
-      if (isInstant()) await new Promise(r => setTimeout(r, 0));
+      if (isInstant()) await new Promise(r => setTimeout(r, S.skipAll ? 0 : S.simDelay || 0));
     }
     // Accelerated round for unsold
     if (S.unsold.length) {
@@ -516,7 +517,7 @@ const Auction = (() => {
         const e = S.lots[S.idx++];
         await runLot(e);
         emit('onUpdate');
-        if (isInstant()) await new Promise(r => setTimeout(r, 0));
+        if (isInstant()) await new Promise(r => setTimeout(r, S.skipAll ? 0 : S.simDelay || 0));
       }
     }
     // Auto-fill teams below minimum
@@ -600,7 +601,8 @@ const Auction = (() => {
 
   return {
     S, init, run, userBid, userBidTo, userCanBid, passLot, simLot, simSetNow, simAllNow, skipSetNow, finishNow, stopSim, setPaused,
-    fmt, inc, ladder, hardCap, canRTM, ovsCount, valuation, canHold, wake,
+    fmt, inc, ladder, hardCap, canRTM, ovsCount, valuation, canHold, wake, baseValue, bestXI, slotVals,
+    setSimDelay: v => { S.simDelay = v; },
     setSpeed: v => { S.speed = v; }, setHammer: v => { S.hammer = v; }, timeLeft, consts: { PURSE, MAX_SQUAD, MIN_SQUAD, MAX_OVS, RTM_CARDS },
   };
 })();

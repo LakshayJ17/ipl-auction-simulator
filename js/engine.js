@@ -60,18 +60,58 @@ const Engine = (() => {
       chosen.push(bench); used.add(bench.id); if (bench.ovs) ovs++;
       bowlOpts++;
     }
-    // Impact: weakest-batting specialist bowler comes in as impact sub, replacing the batter who bowls least.
+    // Impact: the weakest-batting specialist bowler is the impact sub; his partner is the batter who bowls least.
+    // (Which of them starts depends on the toss: see impactPlan.)
     let impact = null, replaced = null, xi = chosen.slice();
     if (chosen.length === 12) {
       const bowlers = chosen.filter(p => p.role === 'BOWL').sort((a, b) => a.bat - b.bat);
       impact = bowlers[0] || chosen.slice().sort((a, b) => a.batR - b.batR)[0];
       xi = chosen.filter(p => p !== impact);
-      const wkCount = xi.filter(x => x.role === 'WK').length;
-      replaced = xi.filter(p => !isBowlOption(p) && !(p.role === 'WK' && wkCount === 1)).sort((a, b) => a.batR - b.batR)[0]
-        || xi.slice().sort((a, b) => a.bowl - b.bowl)[0];
+      replaced = autoPartner(xi, impact);
     }
     const captain = pickCaptain(xi);
     return { xi, impact, replaced, captain };
+  }
+
+  /* ---------------- Impact Player (toss-aware) ----------------
+     The 12 = XI + impact sub. One of the pair (sub, partner) is the "flex batter", the other the "flex bowler".
+     Bat first:  the flex batter starts and bats; at the innings break the flex bowler comes on for the
+                 player who matters least with the ball.
+     Bowl first: the flex bowler starts and bowls; for the chase the flex batter comes in for the weakest
+                 batter, who has already bowled his overs. */
+  const bowlUse = p => isBowlOption(p) ? p.bowlR : p.bt ? p.bowl * 0.5 : 0;
+  const isBowlSub = p => !!p && p.bowlR > p.batR;
+  const soleWK = (set, p) => p.role === 'WK' && set.filter(x => x.role === 'WK').length === 1;
+  function autoPartner(xi, impact) {
+    if (!impact) return null;
+    const ok = p => !(soleWK(xi, p) && impact.role !== 'WK');
+    if (isBowlSub(impact)) return xi.filter(p => !isBowlOption(p) && ok(p)).sort((a, b) => a.batR - b.batR)[0]
+      || xi.filter(ok).sort((a, b) => bowlUse(a) - bowlUse(b))[0] || null;
+    return xi.filter(p => p.role === 'BOWL' && ok(p)).sort((a, b) => a.bat - b.bat)[0]
+      || xi.filter(ok).sort((a, b) => a.bat - b.bat)[0] || null;
+  }
+  // an overseas sub may only come on if the starting XI has fewer than 4 overseas (IPL rule)
+  const ovsOK = (start, sub) => !sub.ovs || start.filter(p => p.ovs).length < 4;
+  function impactPlan(sel) {
+    const xi = sel.xi, none = { start: xi, bat: xi, bowl: xi, sub: null };
+    const partner = sel.impact ? (sel.replaced && xi.includes(sel.replaced) ? sel.replaced : autoPartner(xi, sel.impact)) : null;
+    if (!sel.impact || !partner) return { bf: none, bs: none, flexBat: null, flexBowl: null, partner: null };
+    const bowlSub = isBowlSub(sel.impact);
+    const flexBowl = bowlSub ? sel.impact : partner, flexBat = bowlSub ? partner : sel.impact;
+    const twelve = xi.concat([sel.impact]), cap = sel.captain;
+    // batting first
+    const sBF = twelve.filter(p => p !== flexBowl);
+    const outBF = sBF.filter(p => p !== cap && !soleWK(sBF, p)).sort((a, b) => bowlUse(a) - bowlUse(b) || a.ovr - b.ovr)[0];
+    const bf = outBF && bowlUse(flexBowl) > bowlUse(outBF) && ovsOK(sBF, flexBowl)
+      ? { start: sBF, bat: sBF, bowl: sBF.filter(p => p !== outBF).concat([flexBowl]), sub: { in: flexBowl, out: outBF } }
+      : { start: sBF, bat: sBF, bowl: sBF, sub: null };
+    // bowling first
+    const sBS = twelve.filter(p => p !== flexBat);
+    const outBS = sBS.filter(p => p !== cap).sort((a, b) => a.bat - b.bat || a.batR - b.batR)[0];
+    const bs = outBS && flexBat.bat > outBS.bat && ovsOK(sBS, flexBat)
+      ? { start: sBS, bowl: sBS, bat: sBS.filter(p => p !== outBS).concat([flexBat]), sub: { in: flexBat, out: outBS } }
+      : { start: sBS, bat: sBS, bowl: sBS, sub: null };
+    return { bf, bs, flexBat, flexBowl, partner };
   }
 
   function pickCaptain(xi) {
@@ -79,41 +119,63 @@ const Engine = (() => {
     return caps[0] || xi.slice().sort((a, b) => b.ovr - a.ovr)[0];
   }
 
+  // problems with a user's over-by-over bowling plan (null = auto for that over)
+  function planIssues(plan, players) {
+    const out = [];
+    if (!plan) return out;
+    const name = id => (players.find(p => p.id === id) || { name: '?' }).name;
+    const n = new Map();
+    plan.forEach((id, i) => {
+      if (id == null) return;
+      n.set(id, (n.get(id) || 0) + 1);
+      if (i > 0 && plan[i - 1] === id) out.push(`${name(id)} can't bowl overs ${i} and ${i + 1} back-to-back.`);
+    });
+    for (const [id, c] of n) if (c > 4) out.push(`${name(id)} is planned for ${c} overs (max 4).`);
+    return out;
+  }
+
   function validateSelection(sel) {
     const errs = [];
-    const { xi, impact, replaced } = sel;
+    const { xi, impact } = sel;
     if (xi.length !== 11) errs.push(`Playing XI must have 11 players (currently ${xi.length}).`);
     const ovsXI = xi.filter(p => p.ovs).length;
     if (ovsXI > 4) errs.push(`Max 4 overseas in the XI (currently ${ovsXI}).`);
     if (!xi.some(p => p.role === 'WK')) errs.push('You need a wicketkeeper in the XI.');
-    if (impact) {
-      if (!replaced) errs.push('Choose which XI player the Impact Player replaces.');
-      else {
-        const after = ovsXI - (replaced.ovs ? 1 : 0) + (impact.ovs ? 1 : 0);
-        if (after > 4) errs.push('Impact sub would make 5 overseas on the field — pick an Indian impact player.');
+    const warn = [];
+    if (impact && xi.length === 11) {
+      if (xi.includes(impact)) errs.push('The Impact Player must come from the bench.');
+      if (impact.ovs && ovsXI >= 4) errs.push('With 4 overseas in the XI, the Impact Player must be Indian.');
+      const plan = impactPlan(sel);
+      if (plan.partner) {
+        if (!plan.bs.start.some(p => p.role === 'WK')) errs.push(`${plan.flexBat.name} is your only keeper, so he can't sit out when you bowl first.`);
+        if (!plan.bf.start.some(p => p.role === 'WK')) errs.push(`${plan.flexBowl.name} is your only keeper, so he can't sit out when you bat first.`);
+        if (plan.bf.start.filter(p => p.ovs).length > 4 || plan.bs.start.filter(p => p.ovs).length > 4) errs.push('That impact pair would put 5 overseas in a starting XI.');
       }
     }
-    const warn = [];
-    const bs = derivedSets(sel).bowlSet.filter(isBowlOption).length;
-    if (bs < 5) warn.push(`Only ${bs} genuine bowling options — part-timers will get smashed!`);
+    errs.push(...planIssues(sel.bowlPlan, xi.concat(impact ? [impact] : [])));
+    if (xi.length === 11) {
+      const plan = impactPlan(sel);
+      const bs = Math.min(plan.bf.bowl.filter(isBowlOption).length, plan.bs.bowl.filter(isBowlOption).length);
+      if (bs < 5) warn.push(`Only ${bs} genuine bowling options. Part-timers will get smashed!`);
+    }
     return { errs, warn };
   }
 
   function impactType(sel) {
     if (!sel.impact) return null;
-    return sel.impact.bowlR > sel.impact.batR ? 'bowl' : 'bat';
-  }
-  function derivedSets(sel) {
-    const t = impactType(sel);
-    let batSet = sel.xi.slice(), bowlSet = sel.xi.slice();
-    if (t && sel.replaced) {
-      const swapped = sel.xi.filter(p => p !== sel.replaced).concat([sel.impact]);
-      if (t === 'bowl') bowlSet = swapped; else batSet = swapped;
-    }
-    return { batSet, bowlSet, type: t };
+    return isBowlSub(sel.impact) ? 'bowl' : 'bat';
   }
 
-  function battingOrder(set) {
+  // auto batting order, or the user's order (ids) with anyone not in it slotted in at his natural place
+  function battingOrder(set, order) {
+    const auto = autoOrder(set);
+    if (!order || !order.length) return auto;
+    const idx = new Map(order.map((id, i) => [id, i]));
+    const out = set.filter(p => idx.has(p.id)).sort((a, b) => idx.get(a.id) - idx.get(b.id));
+    auto.forEach((p, i) => { if (!idx.has(p.id)) out.splice(Math.min(i, out.length), 0, p); });
+    return out;
+  }
+  function autoOrder(set) {
     const arr = set.slice();
     const openers = arr.filter(p => p.pos === 'O').sort((a, b) => b.bat - a.bat);
     const rank = new Map();
@@ -136,15 +198,43 @@ const Engine = (() => {
     return pool;
   }
 
-  function prepare(team) { // team: {id, short, name, sel:{xi, impact, replaced, captain}}
-    const { batSet, bowlSet, type } = derivedSets(team.sel);
-    return {
+  // team: {id, short, name, sel:{xi, impact, replaced, captain, batOrder?, bowlPlan?}}
+  // Returns one prepared side for batting first (bf) and one for bowling first (bs).
+  function prepare(team) {
+    const sel = team.sel, plan = impactPlan(sel);
+    const capBonus = sel.captain && has(sel.captain, 'CAP') ? 1.2 : 0.4;
+    const one = sc => ({
       id: team.id, short: team.short, name: team.name,
-      lineup: battingOrder(batSet), bowlers: bowlingPool(bowlSet), field: bowlSet,
-      all: Array.from(new Set(batSet.concat(bowlSet))),
-      capBonus: team.sel.captain && has(team.sel.captain, 'CAP') ? 1.2 : 0.4,
-      impactType: type, sel: team.sel,
+      lineup: battingOrder(sc.bat, sel.batOrder), bowlers: bowlingPool(sc.bowl), field: sc.bowl,
+      all: Array.from(new Set(sc.start.concat(sc.sub ? [sc.sub.in] : []))),
+      start: sc.start, sub: sc.sub, plan: sel.bowlPlan || null, capBonus, sel,
+    });
+    const bf = one(plan.bf), bs = one(plan.bs);
+    return { id: team.id, short: team.short, name: team.name, bf, bs, plan, sel, impactType: impactType(sel), lineup: bf.lineup, bowlers: bs.bowlers };
+  }
+  // a sensible default over-by-over plan: the best death bowlers keep overs for the death,
+  // the new-ball men open, spinners own the middle; nobody bowls more than 2 death or 3 powerplay overs
+  function autoBowlPlan(team) {
+    const pool = prepare(team).bs.bowlers;
+    const phase = o => o < 6 ? 'pp' : o < 15 ? 'mid' : 'death';
+    const score = (b, o) => {
+      let s = b.bowlR; const ph = phase(o);
+      if (ph === 'pp') { if (has(b, 'PP')) s += 7; if (!b.spin) s += 3; else if (!has(b, 'PP')) s -= 4; }
+      else if (ph === 'mid') { if (b.spin) s += 5; if (has(b, 'MID')) s += 4; if (has(b, 'DTH')) s -= 3; }
+      else { if (has(b, 'DTH')) s += 8; if (b.spin) s -= 6; else s += 2; }
+      return s;
     };
+    const plan = Array(20).fill(null), used = new Map(), inPh = new Map();
+    const cap = { pp: 3, mid: 4, death: 2 };
+    const order = [19, 17, 18, 16, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+    for (const o of order) {
+      const ph = phase(o);
+      const c = pool.filter(b => (used.get(b.id) || 0) < 4 && (inPh.get(b.id + ph) || 0) < cap[ph] && plan[o - 1] !== b.id && plan[o + 1] !== b.id)
+        .sort((x, y) => score(y, o) - score(x, o))[0];
+      if (!c) continue; // left to the captain on the day
+      plan[o] = c.id; used.set(c.id, (used.get(c.id) || 0) + 1); inPh.set(c.id + ph, (inPh.get(c.id + ph) || 0) + 1);
+    }
+    return plan;
   }
 
   /* ---------------- Commentary ---------------- */
@@ -158,20 +248,25 @@ const Engine = (() => {
   };
 
   /* ---------------- Innings ---------------- */
-  function chooseBowler(over, pool, st, quota, maxOvers) {
+  // plan: the bowling side's over-by-over plan (ids), whose later overs are kept in reserve
+  function chooseBowler(over, pool, st, quota, maxOvers, plan, fixed) {
     const deathStart = maxOvers - 5;
     let best = null, bestS = -1e9;
     const top2 = pool.slice(0, 2);
+    const later = new Map();
+    if (plan) for (let k = over + 1; k < maxOvers; k++) if (plan[k] != null) later.set(plan[k], (later.get(plan[k]) || 0) + 1);
+    const room = b => quota - (st.overs.get(b.id) || 0) - (later.get(b.id) || 0);
     for (const b of pool) {
       const used = st.overs.get(b.id) || 0;
-      if (used >= quota) continue;
+      if (used >= quota || (room(b) <= 0 && pool.some(x => x !== b && room(x) > 0 && x.id !== st.last))) continue;
       if (b.id === st.last && pool.some(x => x.id !== b.id && (st.overs.get(x.id) || 0) < quota)) continue;
+      if (plan && plan[over + 1] === b.id && pool.some(x => x !== b && x.id !== st.last && room(x) > 0)) continue; // he's down for the next over
       const left = quota - used;
       let s = b.bowlR;
       if (over < 6) { if (has(b, 'PP')) s += 7; if (!b.spin) s += 2; else if (!has(b, 'PP')) s -= 3; }
       else if (over < deathStart) { if (b.spin) s += 5; if (has(b, 'MID')) s += 4; if (has(b, 'DTH') && left <= 2) s -= 12; if (top2.includes(b) && left <= 1) s -= 6; }
       else { if (has(b, 'DTH')) s += 8; if (b.spin) s -= 5; else s += 2; }
-      s += rand() * 3;
+      if (!fixed) s += rand() * 3;
       if (s > bestS) { bestS = s; best = b; }
     }
     return best || pool[0];
@@ -196,12 +291,16 @@ const Engine = (() => {
     cards[0].batted = true; if (cards[1]) cards[1].batted = true;
     let runs = 0, wk = 0, balls = 0, extras = 0;
     const log = [], fow = [], overRuns = [];
-    let partnership = 0, freeHit = false;
+    let partnership = 0, pBalls = 0, freeHit = false;
 
     const target = o.target || 0;
     for (let over = 0; over < maxOvers && wk < maxWk; over++) {
       if (target && runs >= target) break;
-      const bw = chooseBowler(over, pool, st, quota, maxOvers);
+      // the captain's plan (user teams) decides who bowls this over, if that bowler can
+      const want = !so && fs.plan ? fs.plan[over] : null;
+      const planned = want != null ? fs.field.find(p => p.id === want && p.bt) : null;
+      const bw = planned && (st.overs.get(planned.id) || 0) < quota && planned.id !== st.last ? planned
+        : chooseBowler(over, pool, st, quota, maxOvers, so ? null : fs.plan);
       if (!bcards.has(bw.id)) bcards.set(bw.id, { p: bw, balls: 0, r: 0, w: 0, dots: 0, wd: 0, nb: 0 });
       const bc = bcards.get(bw.id);
       let legal = 0, overStart = runs;
@@ -215,7 +314,7 @@ const Engine = (() => {
         const c = cards[striker];
         const bp = c.p;
         const fi = striker, ni = non;
-        const snap = () => ({ s: [cards[fi].p.name, cards[fi].r, cards[fi].b, !!cards[fi].out], n: cards[ni] ? [cards[ni].p.name, cards[ni].r, cards[ni].b] : null, bw: [bw.name, bc.balls, bc.r, bc.w] });
+        const snap = () => ({ s: [cards[fi].p.name, cards[fi].r, cards[fi].b, !!cards[fi].out, cards[fi].f4, cards[fi].f6], n: cards[ni] ? [cards[ni].p.name, cards[ni].r, cards[ni].b, cards[ni].f4, cards[ni].f6] : null, bw: [bw.name, bc.balls, bc.r, bc.w, bc.dots], pt: [partnership, pBalls] });
         // extras
         const pWide = clamp(0.04 * (1 + (66 - eE) / 60) * (1 + 0.3 * dew), 0.015, 0.075);
         const r0 = rand();
@@ -270,7 +369,7 @@ const Engine = (() => {
         if ((x -= pW) < 0) ev = 'W'; else if ((x -= p0) < 0) ev = 0; else if ((x -= p1) < 0) ev = 1;
         else if ((x -= p2) < 0) ev = 2; else if ((x -= p3) < 0) ev = 3; else if ((x -= p4) < 0) ev = 4; else ev = 6;
 
-        if (!noBall) { legal++; balls++; bc.balls++; freeHit = false; }
+        if (!noBall) { legal++; balls++; bc.balls++; freeHit = false; pBalls++; }
         if (noBall) freeHit = true;
         c.b++;
         let txt = '';
@@ -288,7 +387,7 @@ const Engine = (() => {
           const fielder = pick(fs.field.filter(p => p.id !== bw.id));
           ev = rand() < 0.6 ? 0 : 1;
           if (ev === 1) { runs += 1; c.r += 1; bc.r += 1; partnership += 1; } else if (!noBall) bc.dots++;
-          if (det) log.push({ ov: over, b: legal, bowler: bw.name, bat: bp.name, ev, nb: noBall, runs, wk, txt: `DROPPED! ${fielder.name} puts down ${bp.name} on ${c.r}${ev === 1 ? ', and they take a single' : ''}. That could be costly…`, ...snap() });
+          if (det) log.push({ ov: over, b: legal, bowler: bw.name, bat: bp.name, ev, nb: noBall, runs, wk, drop: true, txt: `DROPPED! ${fielder.name} puts down ${bp.name} on ${c.r}${ev === 1 ? ', and they take a single' : ''}. That could be costly…`, ...snap() });
           if (ev === 1) { const t = striker; striker = non; non = t; }
           continue;
         }
@@ -296,8 +395,8 @@ const Engine = (() => {
           // the only way out on a free hit
           c.out = `run out (${pick(fs.field.filter(p => p.id !== bw.id)).name})`; wk++; bc.dots++;
           fow.push({ wk, runs, p: bp.name, ov: `${over}.${legal}` });
-          if (det) log.push({ ov: over, b: legal, bowler: bw.name, bat: bp.name, ev, runs, wk, txt: `OUT! Run out going for a second on the free hit! ${bp.name} ${c.r} (${c.b})`, ...snap() });
-          partnership = 0;
+          if (det) log.push({ ov: over, b: legal, bowler: bw.name, bat: bp.name, ev, runs, wk, how: c.out, txt: `OUT! Run out going for a second on the free hit! ${bp.name} ${c.r} (${c.b})`, ...snap() });
+          partnership = 0; pBalls = 0;
           if (next < cards.length && wk < maxWk) { striker = next; cards[next].batted = true; next++; }
           continue;
         }
@@ -329,7 +428,7 @@ const Engine = (() => {
             const lines = how.startsWith('b ') ? 'TIMBER! Clean bowled!' : how.startsWith('lbw') ? 'Plumb in front — given!' : how.startsWith('st') ? 'Stumped! Lightning-quick glovework!' : how.startsWith('run out') ? 'Direct hit — RUN OUT!' : pick(['Caught! Holes out in the deep.', 'Caught! Top edge… taken!', 'Caught! What a grab!', 'Caught! Straight down the throat.']);
             txt = `OUT! ${lines} ${bp.name} ${c.r} (${c.b}). ${how}`;
           }
-          partnership = 0;
+          partnership = 0; pBalls = 0;
           if (next < cards.length && wk < maxWk) { striker = next; cards[next].batted = true; next++; }
         } else {
           const rr = ev;
@@ -340,12 +439,12 @@ const Engine = (() => {
           if (det) txt = (rr >= 4 ? '' : `${bw.name} to ${bp.name}, `) + pick(TXT[rr]) + (noBall ? ' (No-ball, +1!)' : '');
           if (rr % 2 === 1) { const t = striker; striker = non; non = t; }
         }
-        if (det) log.push({ ov: over, b: legal, bowler: bw.name, bat: bp.name, ev, nb: noBall, runs, wk, txt, ...snap() });
+        if (det) log.push({ ov: over, b: legal, bowler: bw.name, bat: bp.name, ev, nb: noBall, runs, wk, txt, ...(ev === 'W' ? { how: c.out } : {}), ...snap() });
       }
       st.overs.set(bw.id, (st.overs.get(bw.id) || 0) + 1); st.last = bw.id;
       overRuns.push(runs - overStart);
       const t = striker; striker = non; non = t;
-      if (det && legal === 6) log.push({ ov: over, b: 6, ev: 'end', runs, wk, txt: `End of over ${over + 1}: ${bs.short} ${runs}/${wk}` });
+      if (det && legal === 6) log.push({ ov: over, b: 6, ev: 'end', runs, wk, orun: runs - overStart, bw: [bw.name, bc.balls, bc.r, bc.w, bc.dots], txt: `End of over ${over + 1}: ${bs.short} ${runs}/${wk}` });
     }
     return {
       team: bs.id, short: bs.short, runs, wk, balls, extras, maxBalls,
@@ -357,11 +456,12 @@ const Engine = (() => {
   const oversStr = b => `${Math.floor(b / 6)}${b % 6 ? '.' + (b % 6) : ''}`;
 
   function playMatch(home, away, opt = {}) {
-    const H = home.prepared || prepare(home), A = away.prepared || prepare(away);
+    const HP = home.prepared || prepare(home), AP = away.prepared || prepare(away);
+    const H = HP, A = AP;
     const pitch = opt.pitch || { run: 1, spin: 0 };
     // form today = season form (if any) + the day's luck
     const form = {}, fb = opt.formBase || {};
-    for (const p of H.all.concat(A.all)) form[p.id] = (fb[p.id] || 0) + gauss() * 3.2;
+    for (const p of new Set([...HP.bf.all, ...HP.bs.all, ...AP.bf.all, ...AP.bs.all])) form[p.id] = (fb[p.id] || 0) + gauss() * 3.2;
     // conditions: the surface varies around the venue's average; most games are at night and some bring dew
     const cond = 1 + gauss() * 0.035;
     const dew = rand() < 0.5 ? 0.3 + rand() * 0.7 : 0;
@@ -369,8 +469,9 @@ const Engine = (() => {
     // captains mostly chase; dew makes that a no-brainer, a slow turner tempts them to bat
     const batFirstChance = clamp(0.32 - 0.25 * dew + (pitch.spin >= 3 ? 0.25 : 0), 0.08, 0.7);
     const tossBat = rand() < batFirstChance;
-    const first = tossBat ? tossW : (tossW === H ? A : H);
-    const second = first === H ? A : H;
+    // the XI is named after the toss: each side uses its bat-first or bowl-first plan (impact player included)
+    const firstP = tossBat ? tossW : (tossW === H ? A : H);
+    const first = firstP.bf, second = (firstP === H ? A : H).bs;
     const base = { pitch, cond, form, detailed: !!opt.detailed, homeId: opt.neutral ? null : H.id };
     const i1 = simInnings(first, second, base);
     const i2 = simInnings(second, first, { ...base, dew, target: i1.runs + 1 });
@@ -390,7 +491,9 @@ const Engine = (() => {
     }
     const res = {
       home: H.id, away: A.id, toss: { winner: tossW.id, choice: tossBat ? 'bat' : 'bowl' }, dew: dew > 0.6 ? 'heavy' : dew > 0 ? 'some' : 'none',
-      pitchNote: cond > 1.05 ? 'a road' : cond < 0.95 ? 'a sluggish surface' : 'a good pitch', squads: { [H.id]: H.all, [A.id]: A.all },
+      pitchNote: cond > 1.05 ? 'a road' : cond < 0.95 ? 'a sluggish surface' : 'a good pitch', squads: { [first.id]: first.all, [second.id]: second.all },
+      impact: { [first.id]: first.sub, [second.id]: second.sub }, xi: { [first.id]: first.start, [second.id]: second.start },
+      par: Math.round(186 * pitch.run * cond), batOrder: { [first.id]: first.lineup, [second.id]: second.lineup },
       inn: [i1, i2], winner, loser: winner === H.id ? A.id : H.id, margin, superOver: so,
       tie: !!so,
     };
@@ -427,7 +530,7 @@ const Engine = (() => {
     return best;
   }
 
-  return { autoSelect, validateSelection, derivedSets, battingOrder, bowlingPool, prepare, playMatch, pickCaptain, oversStr, impactType, gauss, slotOf, impactScore };
+  return { autoSelect, validateSelection, battingOrder, bowlingPool, prepare, playMatch, pickCaptain, oversStr, impactType, impactPlan, autoBowlPlan, planIssues, isBowlOption, gauss, slotOf, impactScore };
 })();
 
 if (typeof module !== 'undefined') module.exports = Engine;

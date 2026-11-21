@@ -8,7 +8,7 @@ const TBY = Object.fromEntries(TEAMS.map(t => [t.id, t]));
 const fmt = Auction.fmt;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const HAMMER_PACES = [[3500, 'Slow'], [2200, 'Normal'], [1200, 'Quick']];
-const G = { hammer: 2200, userId: null, speed: 1, teams: null, season: null, forecast: null, screen: 'home', auctionDone: false };
+const G = { hammer: 2200, userId: null, speed: 1, teams: null, season: null, forecast: null, screen: 'home', auctionDone: false, year: 2027, tradeHistory: [] };
 
 /* ---------------- small helpers ---------------- */
 function chip(id, cls = '') { const t = TBY[id]; if (!t) return ''; return `<span class="chip ${cls}" style="background:${t.color};color:${t.fg}">${t.short}</span>`; }
@@ -64,8 +64,12 @@ const RULES_HTML = `
       <p>When the hammer falls, the old team can raise the RTM card. The highest bidder then gets <b>ONE final raise</b>. The RTM team must match that price or lose the player.</p>
       <p>A card is only used up when the RTM succeeds, so rivals can RTM just to <b>push your price up</b>.</p></div>
     <div class="panel"><h3>🔁 Impact Player</h3>
-      <p>Pick a Playing XI, then <b>one Impact Player</b> and the XI player they replace.</p>
-      <p><b>Bowling sub</b>: comes in to bowl after the replaced batter has batted. <b>Batting sub</b>: bats in place of a bowler who still bowls.</p></div>
+      <p>Pick a Playing XI and an <b>Impact sub</b>. The sub and his ⇄ partner are a flex pair, and the toss decides who starts.</p>
+      <p><b>Bat first:</b> the extra batter starts. At the break the extra bowler comes on for whoever bowls least. <b>Bowl first:</b> the extra bowler starts. For the chase the extra batter replaces your weakest batter.</p>
+      <p>You can set your own <b>batting order</b> and an over-by-over <b>bowling plan</b>.</p></div>
+    <div class="panel"><h3>🔄 Trades</h3>
+      <p>Swaps and all-cash deals, as in the IPL. The player keeps his salary and purses adjust.</p>
+      <p>Players bought at an auction can't be traded in the window straight after it, so the <b>trade window</b> opens in the off-season, before the next IPL.</p></div>
     <div class="panel"><h3>📈 Ratings & sim</h3>
       <p>OVR is built from <b>IPL 2026 numbers</b> and recent form: Batting, Power, Bowling and Control.</p>
       <p>Tags such as <b>Death Specialist</b>, <b>Powerplay Specialist</b>, <b>Finisher</b> and <b>Anchor</b> change how players perform in the ball-by-ball engine. Venues matter too: Chepauk turns, Chinnaswamy flies.</p>
@@ -228,6 +232,7 @@ function renderAuction() {
     </div>
     <div class="agrid">
       <section class="panel stage" id="stage">
+        <div class="simpanel" id="simPanel"></div>
         <div class="pcard" id="pcard"><div class="muted">The auctioneer is taking the stage…</div></div>
         <div class="bidzone" id="bidzone">
           <div class="bidline">
@@ -259,7 +264,7 @@ function renderAuction() {
   $$('.spd').forEach(b => b.onclick = () => { G.speed = +b.dataset.s; Auction.setSpeed(G.speed); $$('.spd').forEach(x => x.classList.toggle('on', x === b)); });
   $$('.hpace').forEach(b => b.onclick = () => { G.hammer = +b.dataset.v; Auction.setHammer(G.hammer); $$('.hpace').forEach(x => x.classList.toggle('on', x === b)); });
   $('#pauseBtn').onclick = togglePause;
-  $('#stopSimBtn').onclick = () => { Auction.stopSim(); updateSimButtons(); };
+  $('#stopSimBtn').onclick = stopSimNow;
   $('#skipMatchesBtn').onclick = skipToMatches;
   $('#moreBtn').onclick = e => { e.stopPropagation(); $('#moreMenu').classList.toggle('hidden'); };
   $$('#moreMenu [data-m]').forEach(b => b.onclick = () => { $('#moreMenu').classList.add('hidden'); moreAction(b.dataset.m); });
@@ -286,23 +291,27 @@ function moreAction(m) {
   else if (m === 'custom') customBidModal();
   else if (m === 'skipAll') skipToMatches();
   else if (m === 'skipSet') {
-    if (isSimming()) Auction.stopSim();
-    else { Auction.skipSetNow(); toast(`⏭ Skipping ${esc(AS().lot ? AS().lot.set : 'this set')}`); }
+    if (isSimming()) { stopSimNow(); return; }
+    else { G.simFeed = []; Auction.setSimDelay(90); Auction.skipSetNow(); }
     updateSimButtons();
   }
   else if (m === 'simSet') {
-    if (isSimming()) Auction.stopSim();
-    else { Auction.simSetNow(); toast(`🤖 Auto-bidding for ${esc(TBY[G.userId].short)} this set`); }
+    if (isSimming()) { stopSimNow(); return; }
+    else { G.simFeed = []; Auction.setSimDelay(140); Auction.simSetNow(); }
     updateSimButtons();
   }
   else if (m === 'simAll') {
-    if (isSimming()) { Auction.stopSim(); updateSimButtons(); return; }
+    if (isSimming()) { stopSimNow(); return; }
     const U = AS().teams[G.userId], need = Math.max(0, 18 - U.squad.length);
     modal(`<h2>Sim the rest of the auction?</h2>
       <p>🤖 Your squad is filled automatically with your <b>${fmt(U.purse)}</b> purse${need ? ` · ${need} more players needed` : ''}. RTM calls are made for you.</p>
       <div class="row" style="justify-content:flex-end"><button data-close>Cancel</button><button class="primary" id="confSim">Sim it</button></div>`);
-    $('#confSim').onclick = () => { closeModal(); Auction.simAllNow(); updateSimButtons(); };
+    $('#confSim').onclick = () => { closeModal(); G.simFeed = []; Auction.setSimDelay(30); Auction.simAllNow(); updateSimButtons(); };
   }
+}
+function stopSimNow() {
+  Auction.stopSim(); updateSimButtons();
+  const l = AS().lot; if (l && !l.done && !inst()) onLot(l);
 }
 function customBidModal() {
   const c = Auction.userCanBid();
@@ -336,7 +345,7 @@ function skipToMatches() {
     <p>The rest of the auction is simulated instantly.${need ? ` 🤖 Your AI manager keeps bidding for you with your <b>${fmt(U.purse)}</b> purse to complete the squad${Auction.hardCap(U) <= 30 ? '. Your purse is spent, so the remaining spots are filled at base price' : ''}.` : ''}</p>
     <p class="muted">Your XI is auto-picked. You can change it from the season screen.</p>
     <div class="row" style="justify-content:flex-end"><button data-close>Cancel</button><button class="primary" id="confSkip">🏏 Skip to matches</button></div>`);
-  $('#confSkip').onclick = () => { closeModal(); G.skipToMatches = true; G.squadAtSkip = U.squad.length; $('#pcard').innerHTML = '<div class="muted">⏩ Finishing the auction…</div>'; Auction.finishNow(); };
+  $('#confSkip').onclick = () => { closeModal(); G.skipToMatches = true; G.squadAtSkip = U.squad.length; G.simFeed = []; Auction.finishNow(); updateSimButtons(); };
 }
 const isSimming = () => { const S = AS(); return S.simAll || (S.lot && ((S.simSet && S.simSet === S.lot.set) || (S.skipSet && S.skipSet === S.lot.set))); };
 function updateSimButtons() {
@@ -347,6 +356,31 @@ function updateSimButtons() {
   $('#skipSetBtn').textContent = s ? '⏹ Stop sim' : '⏭ Skip this set';
   $('#stopSimBtn').classList.toggle('hidden', !s || G.auctionDone || !!AS().skipAll);
   $('#skipMatchesBtn').classList.toggle('hidden', !userStuck() || !!AS().skipAll);
+  drawSimPanel();
+}
+// live view while the auction is simulated: progress, your manager's buys and a ticker of sales
+G.simFeed = [];
+function simFeedPush(x) { G.simFeed.unshift(x); if (G.simFeed.length > 40) G.simFeed.pop(); scheduleSimDraw(); }
+let simDrawQueued = false;
+function scheduleSimDraw() { if (simDrawQueued) return; simDrawQueued = true; requestAnimationFrame(() => { simDrawQueued = false; drawSimPanel(); }); }
+function drawSimPanel() {
+  const el = $('#simPanel'), stage = $('#stage'); if (!el || !stage) return;
+  const S = AS(), on = !G.auctionDone && (isSimming() || !!S.skipAll);
+  stage.classList.toggle('simming', on);
+  if (!on) { el.innerHTML = ''; return; }
+  const U = S.teams[G.userId];
+  const skip = !S.simAll && S.lot && S.skipSet === S.lot.set;
+  const [ic, mode] = S.skipAll ? ['🏏', 'Finishing the auction'] : S.simAll ? ['🤖', 'Simulating the auction'] : skip ? ['⏭', 'Skipping the set'] : ['⏩', 'Auto-bidding this set'];
+  const c = catCounts(U.squad.map(x => x.p)), need = { WK: 1, BAT: 4, AR: 2, PACE: 3, SPIN: 2 };
+  const signed = G.simFeed.filter(x => x.mine);
+  el.innerHTML = `<div class="sim-head"><span class="sim-spin">${ic}</span><div><div class="sim-mode">${mode}</div><div class="muted">${esc(S.lot ? S.lot.set : '')} · lot ${S.idx} of ${S.lots.length}</div></div><div class="spacer"></div>
+      ${S.simDelay && !S.skipAll ? '<button class="small" id="simFast">⚡ Instant</button>' : ''}</div>
+    <div class="sim-prog"><i style="width:${(S.idx / Math.max(1, S.lots.length) * 100).toFixed(1)}%"></i></div>
+    <div class="sim-me">${chip(G.userId)} <b>${U.squad.length}</b> players · <b class="gold">${fmt(U.purse)}</b> left · ${skip ? 'you are sitting this set out' : '🤖 your manager is bidding'}${signed.length ? ` · signed: ${signed.slice(0, 3).map(x => esc(x.p.name)).join(', ')}${signed.length > 3 ? '…' : ''}` : ''}
+      <div class="rolechips">${Object.keys(need).map(k => `<span class="rc ${c[k] < need[k] ? 'low' : 'ok'}">${CAT_LABEL[k]} <b>${c[k]}</b></span>`).join('')}</div></div>
+    <div class="sim-feed">${G.simFeed.slice(0, 12).map(x => `<div class="sf ${x.mine ? 'mine' : ''} ${x.unsold ? 'uns' : ''}">${x.unsold ? '<span class="chip" style="background:#2a303d;color:#8b93a3">—</span>' : chip(x.team)}
+      <span class="nm">${esc(x.p.name)} <span class="muted">${roleShort(x.p)} ${x.p.ovr}</span></span>${x.unsold ? '<span class="muted">unsold</span>' : `<b class="gold">${fmt(x.price)}</b>${x.rtm ? ' <span class="tag rtm">RTM</span>' : ''}`}</div>`).join('') || '<div class="muted">Starting…</div>'}</div>`;
+  const f = $('#simFast'); if (f) f.onclick = () => { Auction.setSimDelay(0); drawSimPanel(); };
 }
 function togglePause() {
   const S = AS(); Auction.setPaused(!S.paused); if ($('#hammer')) drawHammer();
@@ -367,7 +401,8 @@ function onSet(name, n) {
 function onLot(lot) {
   updateProgress();
   G.callStep = 0;
-  if (inst()) return;
+  if (inst()) { scheduleSimDraw(); return; }
+  drawSimPanel();
   const p = lot.p, S = AS();
   const prevT = p.prev && S.teams[p.prev];
   const sl = G.shortlist.has(p.id);
@@ -470,6 +505,7 @@ function stamp(html, color) {
 
 function onSold(info) {
   updateTeams(); updateMyTeam(); updateProgress();
+  if (inst()) simFeedPush({ team: info.team, p: info.p, price: info.price, rtm: info.rtm, mine: info.team === G.userId });
   const mine = info.team === G.userId;
   if (mine && !inst()) toast(`🎉 <b>${esc(info.p.name)}</b> is yours · ${fmt(info.price)}`, 3000);
   else if (G.shortlist.has(info.p.id) && !inst()) toast(`⭐ ${esc(info.p.name)} → ${chip(info.team)} ${fmt(info.price)}`, 2800);
@@ -482,7 +518,7 @@ function onSold(info) {
   updateBid(info.lot);
 }
 function onUnsold(lot) {
-  if (inst()) return;
+  if (inst()) { simFeedPush({ p: lot.p, unsold: true }); return; }
   hideCallout();
   stamp(`<div class="big" style="color:var(--red)">UNSOLD</div><div class="sub">${esc(lot.p.name)}</div>`, 'var(--red)');
   updateBid(lot);
@@ -614,7 +650,7 @@ function onDone() {
     if (!G.teams) buildSeasonTeams();
     const v = Engine.validateSelection(myTeam().sel);
     if (v.errs.length) renderPost(); // can't auto-pick a legal XI: let the user fix it
-    else { G.season = Season.create(G.teams, G.userId); renderSeason(); }
+    else { G.season = Season.create(G.teams, G.userId, G.year); G.newsSeen = 0; renderSeason(); }
     toast(`🤖 Your manager signed ${bought} player${bought === 1 ? '' : 's'}${fills.length ? ` · ${fills.length} top-up${fills.length > 1 ? 's' : ''}` : ''} · XI auto-picked (✏️ XI to change)`, 4500);
     return;
   }
@@ -659,13 +695,15 @@ const myTeam = () => G.teams.find(t => t.id === G.userId);
 function renderPost() {
   G.screen = 'post'; document.body.classList.remove('in-auction');
   if (!G.teams) buildSeasonTeams();
-  const S = AS(); const U = S.teams[G.userId]; const t = TBY[G.userId];
-  setTop(`${chip(G.userId)} <span class="muted">Squad review</span>`);
+  const tm = myTeam(), t = TBY[G.userId];
+  const wages = tm.buys.reduce((s, b) => s + b.price, 0);
+  setTop(`${chip(G.userId)} <span class="muted">IPL ${G.year} · Squad</span>`);
   $('#screen').innerHTML = `
   <div class="wrap">
     <div class="banner" style="background:linear-gradient(135deg, ${t.color}, ${shade(t.color)});color:${t.fg}">
       <h1>${esc(t.name)}</h1>
-      <div>${fmt(12000 - U.purse)} spent · ${U.squad.length} players · ${Auction.ovsCount(U)} overseas</div></div>
+      <div>IPL ${G.year} · ${tm.squad.length} players · ${tm.squad.filter(p => p.ovs).length} overseas · salaries ${fmt(wages)} · purse left ${fmt(tm.purse)}</div></div>
+    ${G.year === 2027 ? `<div class="note">🔁 <b>Trades:</b> the IPL trade window reopens after the auction, but players bought at an auction can't be traded in that window. So trading opens in the <b>off-season</b>, after IPL 2027.</div>` : ''}
     <div class="grid2">
       <div class="panel"><h3>Playing XI</h3><div id="selEditor"></div></div>
       <div>
@@ -673,15 +711,15 @@ function renderPost() {
         <div class="panel" style="margin-top:14px" id="reviewPanel"></div>
       </div>
     </div>
-    <div class="row" style="justify-content:center;margin:20px 0 40px"><button class="primary bidbtn" id="startSeason">Start season →</button></div>
+    <div class="row" style="justify-content:center;margin:20px 0 40px"><button class="primary bidbtn" id="startSeason">Start IPL ${G.year} →</button></div>
   </div>`;
   renderSelEditor();
   renderReview();
   setTimeout(runForecast, 60);
   $('#startSeason').onclick = () => {
     const v = Engine.validateSelection(myTeam().sel);
-    if (v.errs.length) { toast('⚠️ ' + v.errs[0]); return; }
-    G.season = Season.create(G.teams, G.userId);
+    if (v.errs.length) { toast('⚠️ ' + esc(v.errs[0])); return; }
+    G.season = Season.create(G.teams, G.userId, G.year); G.newsSeen = 0;
     renderSeason();
   };
 }
@@ -695,17 +733,17 @@ function teamIndex(team) {
 }
 
 function runForecast() {
-  G.forecast = Season.forecast(G.teams, 200, G.userId);
+  G.forecast = Season.forecast(G.teams, 200, G.userId, G.year);
   const el = $('#forecastPanel'); if (!el) return;
   const myRank = G.forecast.findIndex(f => f.id === G.userId) + 1;
   const grades = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'D', 'F'];
   const g = grades[myRank - 1];
   const gcol = myRank <= 3 ? 'var(--green)' : myRank <= 6 ? 'var(--gold)' : 'var(--red)';
-  const quips = ['The other nine owners are furious. This is a title-winning squad.', 'Superb auction. Genuine title contenders.', 'Strong squad with playoff written all over it.',
+  const quips = ['The other nine owners are furious. This is a title-winning squad.', 'Superb work. Genuine title contenders.', 'Strong squad with playoff written all over it.',
     'Solid, but the top four will be a dogfight.', 'Mid-table on paper. Needs a hero or two.', 'Some holes in that XI. Hope the stars fire.',
     'Questionable spending, Boss.', 'The fans are worried…', 'That was rough. Pray for form.', 'Wooden-spoon favourites. Bold strategy!'];
   el.innerHTML = `<h3>Power rankings</h3>
-    <div class="row" style="margin-bottom:10px"><div class="grade" style="color:${gcol}">${g}</div><div><b>Auction grade</b><div class="muted">${quips[myRank - 1]}</div></div></div>
+    <div class="row" style="margin-bottom:10px"><div class="grade" style="color:${gcol}">${g}</div><div><b>${G.year === 2027 ? 'Auction grade' : 'Squad grade'}</b><div class="muted">${quips[myRank - 1]}</div></div></div>
     <div class="scroll"><table><tr><th>#</th><th>Team</th><th class="num">XI OVR</th><th class="num">Pts</th><th class="num">Top 4</th><th class="num">Title</th></tr>
     ${G.forecast.map((f, i) => { const tm = G.teams.find(t => t.id === f.id); const ix = teamIndex(tm); return `<tr class="${f.id === G.userId ? 'me' : ''}"><td>${i + 1}</td><td>${chip(f.id)}</td><td class="num">${ix.xi.toFixed(1)}</td><td class="num">${f.avgPts.toFixed(1)}</td><td class="num">${(f.top4 * 100).toFixed(0)}%</td><td class="num">${(f.title * 100).toFixed(0)}%</td></tr>`; }).join('')}
     </table></div>
@@ -714,53 +752,114 @@ function runForecast() {
 }
 
 function renderReview() {
-  const S = AS();
-  const sales = S.sales.filter(s => s.how !== 'fill');
-  const top = sales.slice().sort((a, b) => b.price - a.price).slice(0, 8);
-  const mine = S.teams[G.userId].squad;
-  const valueScore = s => (s.p.ovr - 60) / Math.max(0.3, s.price / 100);
-  const steal = sales.filter(s => s.p.ovr >= 78).sort((a, b) => valueScore(b) - valueScore(a))[0];
-  const mySteal = mine.filter(s => s.p.ovr >= 72).sort((a, b) => valueScore(b) - valueScore(a))[0];
-  const myBig = mine.slice().sort((a, b) => b.price - a.price)[0];
-  const rtms = S.sales.filter(s => s.how === 'rtm');
-  $('#reviewPanel').innerHTML = `<h3>Auction review</h3>
-    ${myBig ? `<p>💸 Top buy: <b>${pl(myBig.p)}</b> <b class="gold">${fmt(myBig.price)}</b></p>` : ''}
-    ${mySteal ? `<p>🕵️ Best value: <b>${pl(mySteal.p)}</b> <span class="muted">${mySteal.p.ovr}</span> <b class="green-t">${fmt(mySteal.price)}</b></p>` : ''}
-    ${steal ? `<p>💎 Steal: <b>${pl(steal.p)}</b> <span class="muted">${steal.p.ovr}</span> ${chip(steal.team)} ${fmt(steal.price)}</p>` : ''}
-    <table><tr><th>Top buys</th><th>Team</th><th class="num">Price</th></tr>${top.slice(0, 5).map(s => `<tr><td>${pl(s.p)} <span class="muted">${s.p.ovr}</span></td><td>${chip(s.team)}</td><td class="num gold">${fmt(s.price)}</td></tr>`).join('')}</table>
-    <div class="row" style="margin-top:10px;gap:6px">${S.order.map(id => `<button class="small" data-tm="${id}">${chip(id)}</button>`).join('')}</div>`;
-  $$('#reviewPanel [data-tm]').forEach(b => b.onclick = () => showTeamModal(b.dataset.tm));
+  const teamBtns = `<div class="row" style="margin-top:10px;gap:6px">${G.teams.map(t => `<button class="small" data-tm="${t.id}">${chip(t.id)}</button>`).join('')}</div>`;
+  if (G.year !== 2027) {
+    const moves = G.tradeHistory.filter(e => e.year === G.year);
+    $('#reviewPanel').innerHTML = `<h3>Off-season trades</h3>${moves.length ? moves.map(tradeLine).join('') : '<div class="muted">No trades this window.</div>'}${teamBtns}`;
+  } else {
+    const S = AS();
+    const sales = S.sales.filter(s => s.how !== 'fill');
+    const top = sales.slice().sort((a, b) => b.price - a.price).slice(0, 8);
+    const mine = S.teams[G.userId].squad;
+    const valueScore = s => (s.p.ovr - 60) / Math.max(0.3, s.price / 100);
+    const steal = sales.filter(s => s.p.ovr >= 78).sort((a, b) => valueScore(b) - valueScore(a))[0];
+    const mySteal = mine.filter(s => s.p.ovr >= 72).sort((a, b) => valueScore(b) - valueScore(a))[0];
+    const myBig = mine.slice().sort((a, b) => b.price - a.price)[0];
+    $('#reviewPanel').innerHTML = `<h3>Auction review</h3>
+      ${myBig ? `<p>💸 Top buy: <b>${pl(myBig.p)}</b> <b class="gold">${fmt(myBig.price)}</b></p>` : ''}
+      ${mySteal ? `<p>🕵️ Best value: <b>${pl(mySteal.p)}</b> <span class="muted">${mySteal.p.ovr}</span> <b class="green-t">${fmt(mySteal.price)}</b></p>` : ''}
+      ${steal ? `<p>💎 Steal: <b>${pl(steal.p)}</b> <span class="muted">${steal.p.ovr}</span> ${chip(steal.team)} ${fmt(steal.price)}</p>` : ''}
+      <table><tr><th>Top buys</th><th>Team</th><th class="num">Price</th></tr>${top.slice(0, 5).map(s => `<tr><td>${pl(s.p)} <span class="muted">${s.p.ovr}</span></td><td>${chip(s.team)}</td><td class="num gold">${fmt(s.price)}</td></tr>`).join('')}</table>${teamBtns}`;
+  }
+  $$('#reviewPanel [data-tm]').forEach(b => b.onclick = () => showRoster(b.dataset.tm));
+}
+// a franchise's current squad (after the auction / trades)
+function showRoster(id) {
+  const T = G.teams.find(t => t.id === id);
+  const rows = T.squad.slice().sort((a, b) => Trade.salary(T, b) - Trade.salary(T, a)).map(p => {
+    const b = T.buys.find(x => x.p.id === p.id) || {};
+    return `<tr><td>${flag(p)} ${pl(p)}</td><td>${roleShort(p)}</td><td class="num">${p.ovr}</td><td class="num">${fmt(b.price || p.base)}</td><td>${b.how === 'rtm' ? '<span class="tag rtm">RTM</span>' : b.how === 'fill' ? '<span class="muted">top-up</span>' : b.how === 'trade' ? `<span class="tag">🔁 ${b.from}</span>` : ''}</td></tr>`;
+  }).join('');
+  const c = catCounts(T.squad);
+  modal(`<h2>${chip(id, 'lg')} ${esc(TBY[id].name)}</h2>
+    <p class="muted">${id === G.userId ? 'Your franchise' : 'AI style: ' + esc(TBY[id].persona.label)} · Purse <b class="gold">${fmt(T.purse)}</b> · ${T.squad.length} players · ${T.squad.filter(p => p.ovs).length} overseas</p>
+    <p class="muted">${Object.keys(c).map(k => `${CAT_LABEL[k]}: <b>${c[k]}</b>`).join(' · ')}</p>
+    <div class="scroll"><table><tr><th>Player</th><th>Role</th><th class="num">OVR</th><th class="num">Salary</th><th></th></tr>${rows}</table></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button data-close>Close</button></div>`);
 }
 
+/* ---------------- Playing XI editor: XI, toss-aware impact plan, batting order, bowling plan ---------------- */
+const shortName = p => { const w = p.name.split(' '); return w.length > 1 ? w[0][0] + ' ' + w.slice(1).join(' ') : p.name; };
+const pool12 = sel => sel.xi.concat(sel.impact ? [sel.impact] : []);
+// drop order/plan entries for players who are no longer in the XI + impact
+function cleanSel(sel) {
+  const ids = new Set(pool12(sel).map(p => p.id));
+  if (sel.batOrder) { sel.batOrder = sel.batOrder.filter(id => ids.has(id)); if (!sel.batOrder.length) sel.batOrder = null; }
+  if (sel.bowlPlan) { sel.bowlPlan = sel.bowlPlan.map(id => ids.has(id) ? id : null); if (sel.bowlPlan.every(x => x == null)) sel.bowlPlan = null; }
+  if (sel.replaced && !sel.xi.includes(sel.replaced)) sel.replaced = null;
+}
+function impactPlanHTML(sel, plan) {
+  if (!sel.impact) return '<div class="muted" style="font-size:13px">No Impact Player picked: the same XI bats and bowls.</div>';
+  if (!plan || !plan.partner) return '<div class="muted" style="font-size:13px">Pick 11 players to see the impact plan.</div>';
+  const n = p => `<b>${esc(p.name)}</b>`;
+  const bf = plan.bf, bs = plan.bs;
+  return `<div class="toss-plan">
+    <div><span class="tp-h">🏏 Bat first</span> ${n(plan.flexBat)} starts and bats. ${bf.sub ? `At the break 🔁 ${n(bf.sub.in)} comes on to bowl for ${n(bf.sub.out)}.` : `<span class="muted">${esc(plan.flexBowl.name)} wouldn't improve the attack, so no swap.</span>`}</div>
+    <div><span class="tp-h">🎯 Bowl first</span> ${n(plan.flexBowl)} starts and bowls. ${bs.sub ? `For the chase 🔁 ${n(bs.sub.in)} comes in for ${n(bs.sub.out)}.` : `<span class="muted">${esc(plan.flexBat.name)} wouldn't strengthen the batting, so no swap.</span>`}</div>
+  </div>`;
+}
 function renderSelEditor() {
   const tm = myTeam(); const sel = tm.sel;
+  cleanSel(sel);
   const order = { WK: 0, BAT: 1, AR: 2, BOWL: 3 };
   const squad = tm.squad.slice().sort((a, b) => order[a.role] - order[b.role] || b.ovr - a.ovr);
   const inXI = new Set(sel.xi.map(p => p.id));
   const price = id => (tm.buys.find(b => b.p.id === id) || {}).price || 0;
   const v = Engine.validateSelection(sel);
-  const pr = sel.xi.length === 11 ? Engine.prepare(tm) : null;
-  const itype = Engine.impactType(sel);
+  const full = sel.xi.length === 11;
+  const plan = full ? Engine.impactPlan(sel) : null;
   const bench = squad.filter(p => !inXI.has(p.id));
+  const twelve = pool12(sel);
+  const bo = Engine.battingOrder(twelve, sel.batOrder);
+  const bowlers = twelve.filter(p => p.bt && p.bowl >= 40).sort((a, b) => b.bowlR - a.bowlR);
+  const bp = sel.bowlPlan || Array(20).fill(null);
+  const tally = new Map(); bp.forEach(id => { if (id != null) tally.set(id, (tally.get(id) || 0) + 1); });
+  const batNote = p => {
+    if (!plan || !plan.partner) return '';
+    const a = plan.bf.bat.includes(p), b = plan.bs.bat.includes(p);
+    return a && b ? '' : a ? '<span class="tag">bats if batting first</span>' : b ? '<span class="tag">bats only in a chase</span>' : '<span class="tag">swapped out</span>';
+  };
+  const ph = o => o < 6 ? 'pp' : o < 15 ? 'mid' : 'death';
   $('#selEditor').innerHTML = `
     <div class="row" style="margin-bottom:8px"><span>XI <b>${sel.xi.length}/11</b> · ✈ <b>${sel.xi.filter(p => p.ovs).length}/4</b></span><div class="spacer"></div><button class="small" id="autoXI">✨ Auto-pick</button></div>
-    <div class="scroll" style="max-height:420px"><table class="sel-table">
-      <tr><th>XI</th><th>Player</th><th>Role</th><th class="num">OVR</th><th class="num hide-m">Bat</th><th class="num hide-m">Bowl</th><th class="num hide-m">Price</th></tr>
-      ${squad.map(p => `<tr class="${inXI.has(p.id) ? 'inxi' : ''}"><td><input type="checkbox" data-pid="${p.id}" ${inXI.has(p.id) ? 'checked' : ''}></td>
-        <td>${pl(p)} ${p.ovs ? '<span class="muted">✈</span>' : ''} ${sel.impact && sel.impact.id === p.id ? '<span class="tag rtm">IMPACT</span>' : ''}${sel.captain && sel.captain.id === p.id ? '<span class="tag">C</span>' : ''}</td>
+    <div class="scroll" style="max-height:380px"><table class="sel-table">
+      <tr><th>XI</th><th>Player</th><th>Role</th><th class="num">OVR</th><th class="num hide-m">Bat</th><th class="num hide-m">Bowl</th><th class="num hide-m">Salary</th></tr>
+      ${squad.map(p => `<tr class="${inXI.has(p.id) ? 'inxi' : ''} ${sel.impact && sel.impact.id === p.id ? 'isimp' : ''}"><td><input type="checkbox" data-pid="${p.id}" ${inXI.has(p.id) ? 'checked' : ''} aria-label="Pick ${esc(p.name)}"></td>
+        <td>${pl(p)} ${p.ovs ? '<span class="muted">✈</span>' : ''} ${sel.impact && sel.impact.id === p.id ? '<span class="tag rtm">IMPACT</span>' : ''}${plan && plan.partner === p ? '<span class="tag">⇄ flex</span>' : ''}${sel.captain && sel.captain.id === p.id ? '<span class="tag">C</span>' : ''}</td>
         <td>${roleShort(p)}</td><td class="num"><b>${p.ovr}</b></td><td class="num hide-m">${p.batR}</td><td class="num hide-m">${p.bt ? p.bowlR : '–'}</td><td class="num muted hide-m">${fmt(price(p.id))}</td></tr>`).join('')}
     </table></div>
-    <div class="row" style="margin-top:10px">
-      <label>🔁 Impact <select id="impSel"><option value="">— none —</option>${bench.map(p => `<option value="${p.id}" ${sel.impact && sel.impact.id === p.id ? 'selected' : ''}>${esc(p.name)} (${roleShort(p)} ${p.ovr})</option>`).join('')}</select></label>
-      <label>replaces <select id="repSel"><option value="">—</option>${sel.xi.map(p => `<option value="${p.id}" ${sel.replaced && sel.replaced.id === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
-      <label>© Captain <select id="capSel">${sel.xi.map(p => `<option value="${p.id}" ${sel.captain && sel.captain.id === p.id ? 'selected' : ''}>${esc(p.name)}${p.tags.includes('CAP') ? ' ★' : ''}</option>`).join('')}</select></label>
+    <div class="impact-box">
+      <div class="row">
+        <label>🔁 Impact sub <select id="impSel"><option value="">None</option>${bench.map(p => `<option value="${p.id}" ${sel.impact && sel.impact.id === p.id ? 'selected' : ''}>${esc(p.name)} (${roleShort(p)} ${p.ovr})</option>`).join('')}</select></label>
+        <label>⇄ swaps with <select id="repSel"><option value="">Auto${plan && plan.partner && !sel.replaced ? ` (${esc(plan.partner.name)})` : ''}</option>${sel.xi.map(p => `<option value="${p.id}" ${sel.replaced && sel.replaced.id === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+        <label>© Captain <select id="capSel">${sel.xi.map(p => `<option value="${p.id}" ${sel.captain && sel.captain.id === p.id ? 'selected' : ''}>${esc(p.name)}${p.tags.includes('CAP') ? ' ★' : ''}</option>`).join('')}</select></label>
+      </div>
+      ${impactPlanHTML(sel, plan)}
     </div>
-
     ${v.errs.length ? `<div class="errs" style="margin-top:8px">${v.errs.map(esc).join('<br>')}</div>` : ''}
     ${v.warn.length ? `<div class="warns" style="margin-top:8px">${v.warn.map(esc).join('<br>')}</div>` : ''}
-    ${pr ? `<details style="margin-top:12px"><summary class="muted">Batting order & bowling</summary><div class="grid2 even" style="margin-top:8px">
-      <div><h3>Batting</h3>${pr.lineup.map((p, i) => `<div style="font-size:13px">${i + 1}. ${esc(p.name)} <span class="muted">${p.batR}</span></div>`).join('')}</div>
-      <div><h3>Bowling</h3>${pr.bowlers.slice(0, 6).map(p => `<div style="font-size:13px">${esc(p.name)} <span class="muted">${p.bowlR}</span></div>`).join('')}</div></div></details>` : ''}`;
+    ${full ? `
+    <details class="sel-sec" id="boDet" ${G.openBO ? 'open' : ''}><summary>🏏 Batting order <span class="muted">${sel.batOrder ? 'custom' : 'auto'}</span></summary>
+      <ol class="order-list">${bo.map((p, i) => `<li><span class="n">${i + 1}</span><span class="nm">${esc(p.name)} <span class="muted">${roleShort(p)} · ${p.batR}</span> ${batNote(p)}</span>
+        <button class="small mv" data-up="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(p.name)} up">↑</button><button class="small mv" data-dn="${i}" ${i === bo.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(p.name)} down">↓</button></li>`).join('')}</ol>
+      <div class="row"><button class="small" id="boAuto" ${sel.batOrder ? '' : 'disabled'}>↺ Auto order</button><span class="muted" style="font-size:12px">Whoever sits out after the toss is skipped. The impact batter bats where you put him.</span></div>
+    </details>
+    <details class="sel-sec" id="bpDet" ${G.openBP ? 'open' : ''}><summary>🎯 Bowling plan <span class="muted">${sel.bowlPlan ? tally.size + ' bowlers planned' : 'auto'}</span></summary>
+      <div class="plan-grid">${bp.map((id, o) => `<label class="ov ${ph(o)}"><span>${o + 1}</span><select data-ov="${o}" aria-label="Over ${o + 1}"><option value="">Auto</option>${bowlers.map(b => `<option value="${b.id}" ${id === b.id ? 'selected' : ''}>${esc(shortName(b))}</option>`).join('')}</select></label>`).join('')}</div>
+      <div class="tally">${bowlers.map(b => `<span class="${(tally.get(b.id) || 0) > 4 ? 'red-t' : ''}">${esc(shortName(b))} <b>${tally.get(b.id) || 0}</b>/4</span>`).join('')}</div>
+      <div class="row"><button class="small" id="bpAuto">✨ Suggest a plan</button><button class="small" id="bpClear" ${sel.bowlPlan ? '' : 'disabled'}>Clear (all auto)</button></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">Overs left on Auto are picked by your captain during the match. If a planned bowler isn't on the field or has just bowled, the captain picks someone else for that over.</div>
+    </details>` : ''}`;
   $$('#selEditor input[type=checkbox]').forEach(cb => cb.onchange = () => {
     const p = tm.squad.find(x => x.id === +cb.dataset.pid);
     if (cb.checked) { if (sel.xi.length >= 11) { toast('XI is full. Untick someone first.'); cb.checked = false; return; } sel.xi.push(p); if (sel.impact && sel.impact.id === p.id) sel.impact = null; }
@@ -768,10 +867,25 @@ function renderSelEditor() {
     if (!sel.captain && sel.xi.length) sel.captain = Engine.pickCaptain(sel.xi);
     renderSelEditor();
   });
-  $('#impSel').onchange = e => { sel.impact = tm.squad.find(x => x.id === +e.target.value) || null; renderSelEditor(); };
+  $('#impSel').onchange = e => { sel.impact = tm.squad.find(x => x.id === +e.target.value) || null; sel.replaced = null; renderSelEditor(); };
   $('#repSel').onchange = e => { sel.replaced = sel.xi.find(x => x.id === +e.target.value) || null; renderSelEditor(); };
   $('#capSel').onchange = e => { sel.captain = sel.xi.find(x => x.id === +e.target.value) || null; renderSelEditor(); };
   $('#autoXI').onclick = () => { tm.sel = Engine.autoSelect(tm.squad); renderSelEditor(); };
+  if (!full) return;
+  $('#boDet').ontoggle = e => { G.openBO = e.target.open; };
+  $('#bpDet').ontoggle = e => { G.openBP = e.target.open; };
+  const move = (i, d) => { const ids = bo.map(p => p.id); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; sel.batOrder = ids; renderSelEditor(); };
+  $$('#selEditor [data-up]').forEach(b => b.onclick = () => move(+b.dataset.up, -1));
+  $$('#selEditor [data-dn]').forEach(b => b.onclick = () => move(+b.dataset.dn, 1));
+  $('#boAuto').onclick = () => { sel.batOrder = null; renderSelEditor(); };
+  $$('#selEditor [data-ov]').forEach(s => s.onchange = () => {
+    const plan2 = (sel.bowlPlan || Array(20).fill(null)).slice();
+    plan2[+s.dataset.ov] = s.value === '' ? null : +s.value;
+    sel.bowlPlan = plan2.every(x => x == null) ? null : plan2;
+    renderSelEditor();
+  });
+  $('#bpAuto').onclick = () => { sel.bowlPlan = Engine.autoBowlPlan(tm); renderSelEditor(); };
+  $('#bpClear').onclick = () => { sel.bowlPlan = null; renderSelEditor(); };
 }
 
 /* =====================================================================
@@ -782,12 +896,12 @@ function renderSeason() {
   G.screen = 'season';
   const S = G.season;
   if (S.phase === 'done') return renderEnd();
-  if (S.news && S.news.length > (G.newsSeen || 0)) { const fresh = S.news.slice(G.newsSeen || 0); G.newsSeen = S.news.length; setTimeout(() => toast(fresh.map(x => esc(x.txt)).join('<br>'), 4500), 3200); }
+  if (S.news && S.news.length > (G.newsSeen || 0)) { const fresh = S.news.slice(G.newsSeen || 0); G.newsSeen = S.news.length; setTimeout(() => { if (G.screen === 'season') toast(fresh.map(x => esc(x.txt)).join('<br>'), 4500); }, 3200); }
   const fx = Season.nextFixture(S);
   const st = Season.standings(S);
   const myRow = S.table[G.userId];
   const pos = st.findIndex(r => r.id === G.userId) + 1;
-  setTop(`${chip(G.userId)} <span><b>${myRow.w}-${myRow.l}</b> · ${Season.ordinal(pos)}</span>`);
+  setTop(`${chip(G.userId)} <span class="muted">IPL ${S.year}</span> <span><b>${myRow.w}-${myRow.l}</b> · ${Season.ordinal(pos)}</span>`);
   const mine = fx && (fx.home === G.userId || fx.away === G.userId);
   const venue = fx ? (fx.stage === 'League' || fx.stage === 'Qualifier 1' || fx.stage === 'Eliminator' ? TBY[fx.home].venue : Season.FINAL_VENUE.venue) : '';
   const userAlive = S.phase === 'league' || (S.final4.includes(G.userId) && !S.playoffs.some(f => f.result && f.result.loser === G.userId && f.stage !== 'Qualifier 1'));
@@ -822,17 +936,52 @@ function renderSeason() {
   $('#quickBtn').onclick = () => { const r = Season.playNext(S, true); if (mine) resultToast(r.res); renderSeason(); };
   $('#editXIBtn').onclick = openXIModal;
   $$('tr[data-team]').forEach(tr => tr.onclick = () => showSeasonTeam(tr.dataset.team));
-  $('#toMineBtn').onclick = () => { simUntil(() => { const f = Season.nextFixture(S); return !f || f.home === G.userId || f.away === G.userId; }); };
-  if ($('#endLeagueBtn')) $('#endLeagueBtn').onclick = () => simUntil(() => S.phase !== 'league');
-  if ($('#endAllBtn')) $('#endAllBtn').onclick = () => simUntil(() => S.phase === 'done');
+  $('#toMineBtn').onclick = () => { simUntil(() => { const f = Season.nextFixture(S); return !f || f.home === G.userId || f.away === G.userId; }, 'To your next match'); };
+  if ($('#endLeagueBtn')) $('#endLeagueBtn').onclick = () => simUntil(() => S.phase !== 'league', 'Simulating the league');
+  if ($('#endAllBtn')) $('#endAllBtn').onclick = () => simUntil(() => S.phase === 'done', 'Simulating to the Final');
   $$('[data-tab]').forEach(b => b.onclick = () => { G.tab = b.dataset.tab; renderSeason(); });
   renderTab();
 }
-function simUntil(stop) {
-  const S = G.season; let n = 0;
-  // always play at least one match
-  do { const r = Season.playNext(S, true); if (!r) break; n++; if (r.res && (r.res.home === G.userId || r.res.away === G.userId)) resultToast(r.res); } while (!stop() && S.phase !== 'done');
-  renderSeason();
+// season sim with a live feed: results tick in, the table moves, you can stop at any time
+function simUntil(stop, label) {
+  const S = G.season; let cancel = false, n = 0, w = 0, l = 0;
+  const feed = [];
+  modal(`<div class="ssim"><div class="row"><h2 style="margin:0">⏩ ${esc(label || 'Simulating')}</h2><div class="spacer"></div><button class="small" id="ssFast">⚡ Instant</button><button class="small danger" id="ssStop">⏹ Stop</button></div>
+    <div class="sim-prog" style="margin:10px 0"><i id="ssProg"></i></div><div class="muted" id="ssInfo"></div>
+    <div class="grid2 even" style="margin-top:10px"><div class="ss-feed" id="ssFeed"></div><div id="ssTable"></div></div></div>`, { wide: true, locked: true });
+  let delay = 70;
+  $('#ssStop').onclick = () => { cancel = true; };
+  $('#ssFast').onclick = () => { delay = 0; $('#ssFast').disabled = true; };
+  const played = () => S.results.length;
+  const draw = () => {
+    const pct = Math.min(100, played() / 74 * 100);
+    $('#ssProg').style.width = pct.toFixed(1) + '%';
+    const row = S.table[G.userId], pos = Season.standings(S).findIndex(r => r.id === G.userId) + 1;
+    $('#ssInfo').innerHTML = `${S.phase === 'league' ? `League match ${Math.min(70, S.idx)} of 70` : S.phase === 'playoffs' ? '🏆 Playoffs' : 'Season complete'} · ${chip(G.userId)} ${row.w}W ${row.l}L · ${Season.ordinal(pos)}${n ? ` · this sim: <b>${w}W ${l}L</b>` : ''}`;
+    $('#ssFeed').innerHTML = feed.slice(0, 12).map(r => {
+      const mine = r.home === G.userId || r.away === G.userId, won = r.winner === G.userId;
+      return `<div class="result ${mine ? 'mine' : ''}"><span class="no">${r.stage === 'League' ? '#' + r.no : esc(r.stage.replace('Qualifier', 'Q').replace('Eliminator', 'ELIM'))}</span>${chip(r.inn[0].team)} ${r.inn[0].runs}/${r.inn[0].wk} <span class="muted">v</span> ${chip(r.inn[1].team)} ${r.inn[1].runs}/${r.inn[1].wk}<span class="spacer"></span>${mine ? `<b class="${won ? 'green-t' : 'red-t'}">${won ? 'W' : 'L'}</b>` : `<b>${r.winner}</b>`}</div>`;
+    }).join('');
+    $('#ssTable').innerHTML = tableHTML(S);
+  };
+  const done = () => {
+    closeModal();
+    if (n) toast(`⏩ Simmed ${n} match${n > 1 ? 'es' : ''}${w + l ? ` · you went <b>${w}-${l}</b>` : ''}`, 3200);
+    renderSeason();
+  };
+  const tick = () => {
+    const r = Season.playNext(S, true);
+    if (r) {
+      n++; feed.unshift(r.res);
+      if (r.res.home === G.userId || r.res.away === G.userId) { if (r.res.winner === G.userId) w++; else l++; }
+    }
+    if (!r || stop() || S.phase === 'done' || cancel) { draw(); setTimeout(done, cancel ? 0 : 450); return; }
+    if (delay === 0) { // instant: play the rest in one go, still drawing now and then
+      for (let k = 0; k < 6; k++) { if (stop() || S.phase === 'done') break; const r2 = Season.playNext(S, true); if (!r2) break; n++; feed.unshift(r2.res); if (r2.res.home === G.userId || r2.res.away === G.userId) { if (r2.res.winner === G.userId) w++; else l++; } }
+    }
+    draw(); setTimeout(tick, delay);
+  };
+  draw(); setTimeout(tick, 120);
 }
 function newsHTML(S) {
   if (!Season.teamNews) return '';
@@ -901,11 +1050,44 @@ function statsHTML(S, big) {
 }
 
 /* ---------------- Scorecard ---------------- */
+// team colour that reads on the dark background
+const tint = id => { const t = TBY[id]; const n = parseInt(t.color.slice(1), 16); const lum = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255); return lum < 70 ? t.fg : t.color; };
+// runs per over for both innings; wickets as dots on top
+function manhattanSVG(inns) {
+  const W = 20, H = 110, bw = 7, gap = 6, slot = bw * 2 + gap;
+  const max = Math.max(18, ...inns.flatMap(i => i.overs.map(x => x || 0)));
+  const y = v => H - 14 - (v / max) * (H - 30);
+  let g = '';
+  for (let o = 0; o < W; o++) {
+    inns.forEach((inn, k) => {
+      const r = inn.overs[o]; if (r == null) return;
+      const x = 22 + o * slot + k * bw;
+      g += `<rect x="${x}" y="${y(r).toFixed(1)}" width="${bw - 1}" height="${(H - 14 - y(r)).toFixed(1)}" rx="1.5" fill="${tint(inn.team)}" opacity="${k ? 0.85 : 1}"><title>${inn.team} over ${o + 1}: ${r} run${r === 1 ? '' : 's'}${inn.wks[o] ? `, ${inn.wks[o]} wkt` : ''}</title></rect>`;
+      for (let w = 0; w < (inn.wks[o] || 0); w++) g += `<circle cx="${x + (bw - 1) / 2}" cy="${(y(r) - 5 - w * 7).toFixed(1)}" r="2.6" fill="var(--red)"/>`;
+    });
+    if (o % 5 === 4 || o === 0) g += `<text x="${22 + o * slot + bw}" y="${H - 2}" text-anchor="middle" class="ax">${o + 1}</text>`;
+  }
+  for (const v of [6, 12, 18].filter(v => v <= max)) g += `<line x1="18" x2="${22 + W * slot}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="14" y="${y(v) + 3}" text-anchor="end" class="ax">${v}</text>`;
+  const legend = inns.map(i => `<span><i style="background:${tint(i.team)}"></i>${i.team}</span>`).join('');
+  return `<div class="manhattan"><svg viewBox="0 0 ${24 + W * slot} ${H}" role="img" aria-label="Runs per over">${g}</svg><div class="mh-leg">${legend}<span><i class="wk"></i>wicket</span></div></div>`;
+}
+function overSeries(inn) {
+  const overs = [], wks = [];
+  let start = 0, ov = -1;
+  for (const l of inn.log) {
+    if (l.ov !== ov) { ov = l.ov; start = overs.length ? overs.reduce((a, b) => a + b, 0) : 0; }
+    overs[l.ov] = l.runs - start;
+    if (l.ev === 'W') wks[l.ov] = (wks[l.ov] || 0) + 1;
+  }
+  return { team: inn.team, overs, wks };
+}
 function scorecardHTML(res) {
   const inns = res.inn.map(inn => {
     const batted = inn.bat.filter(c => c.batted);
     const dnb = inn.bat.filter(c => !c.batted).map(c => esc(c.p.name));
-    return `<h3 style="margin-top:14px">${chip(inn.team, 'lg')} ${inn.runs}/${inn.wk} <span class="muted">(${oversStr(inn.balls)} ov)</span></h3>
+    const sub = res.impact && res.impact[inn.team];
+    return `<h3 style="margin-top:14px">${chip(inn.team, 'lg')} ${inn.runs}/${inn.wk} <span class="muted">(${oversStr(inn.balls)} ov · RR ${(inn.runs / Math.max(1, inn.balls) * 6).toFixed(2)})</span></h3>
+    ${sub ? `<div class="muted" style="font-size:12px">🔁 Impact Player: <b>${esc(sub.in.name)}</b> came in for ${esc(sub.out.name)}</div>` : ''}
     <div class="scroll"><table class="scorecard"><tr><th>Batter</th><th></th><th class="num">R</th><th class="num">B</th><th class="num">4s</th><th class="num">6s</th><th class="num">SR</th></tr>
     ${batted.map(c => `<tr><td>${esc(c.p.name)}</td><td class="how">${c.out ? esc(c.out) : '<b class="green-t">not out</b>'}</td><td class="num"><b>${c.r}</b></td><td class="num">${c.b}</td><td class="num">${c.f4}</td><td class="num">${c.f6}</td><td class="num">${c.b ? (c.r / c.b * 100).toFixed(1) : '-'}</td></tr>`).join('')}
     <tr><td>Extras</td><td></td><td class="num">${inn.extras}</td><td colspan="4"></td></tr></table></div>
@@ -915,97 +1097,188 @@ function scorecardHTML(res) {
     ${inn.bowl.map(b => `<tr><td>${esc(b.p.name)}</td><td class="num">${oversStr(b.balls)}</td><td class="num">${b.r}</td><td class="num"><b>${b.w}</b></td><td class="num">${b.balls ? (b.r / b.balls * 6).toFixed(2) : '-'}</td><td class="num">${b.dots}</td></tr>`).join('')}</table></div>`;
   }).join('');
   const so = res.superOver ? `<p class="gold">⚡ Super Over: ${res.superOver.map(([a, b]) => `${a.short} ${a.runs}/${a.wk} v ${b.short} ${b.runs}/${b.wk}`).join(' · then ')}</p>` : '';
+  const mh = res.inn[0].log && res.inn[0].log.length ? manhattanSVG(res.inn.map(overSeries)) : '';
   return `<h2>${res.stage === 'League' ? 'Match ' + res.no : res.stage}: ${chip(res.home, 'lg')} vs ${chip(res.away, 'lg')}</h2>
-    <div class="muted">🏟️ ${esc(res.venue)} · Toss: ${res.toss.winner} chose to ${res.toss.choice}${res.dew && res.dew !== 'none' ? ` · 💧 ${res.dew} dew` : ''}</div>
-    <p><b>${esc(TBY[res.winner].name)}</b> ${esc(res.margin)} · Player of the Match: <b class="gold">${esc(res.motm ? res.motm.name : '-')}</b></p>${so}${inns}`;
+    <div class="muted">🏟️ ${esc(res.venue)} · Toss: ${res.toss.winner} chose to ${res.toss.choice}${res.pitchNote ? ` · ${res.pitchNote}` : ''}${res.dew && res.dew !== 'none' ? ` · 💧 ${res.dew} dew` : ''}</div>
+    <p><b>${esc(TBY[res.winner].name)}</b> ${esc(res.margin)} · Player of the Match: <b class="gold">${esc(res.motm ? res.motm.name : '-')}</b></p>${so}${mh}${inns}`;
 }
 function showScorecard(res) {
   modal(scorecardHTML(res) + `<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-close>Close</button></div>`, { wide: true });
 }
 
 /* ---------------- Live match centre ---------------- */
+// chance that the side batting first wins, from the score, the wickets and the balls left
+const WKF = [1.12, 1.08, 1.03, 0.97, 0.9, 0.8, 0.68, 0.55, 0.42, 0.3];
+function winProb(res, k, s, target) {
+  if (k === 0) {
+    if (!s.started) return 0.5;
+    const bl = 120 - s.balls, proj = s.runs + (s.wk >= 10 ? 0 : bl / 6 * 9.1 * WKF[Math.min(9, s.wk)]);
+    return 1 / (1 + Math.exp(-(proj - (res.par || 186)) / 24));
+  }
+  const need = target - s.runs, bl = 120 - s.balls;
+  if (need <= 0) return 0;
+  if (s.wk >= 10 || bl <= 0) return 1;
+  const exp = bl / 6 * 9.3 * WKF[Math.min(9, s.wk)];
+  return 1 - 1 / (1 + Math.exp(-(exp - need) / (6 + bl * 0.1)));
+}
 function watchMatch(res, after) {
   const evs = [];
-  res.inn.forEach((inn, k) => { inn.log.forEach(l => evs.push({ k, l })); evs.push({ k, innEnd: true }); });
-  let i = 0, timer = null, speed = 320, finished = false, paused = false;
-  const st = [{ runs: 0, wk: 0, balls: 0, started: false }, { runs: 0, wk: 0, balls: 0, started: false }];
-  let cur = { k: 0, s: null, n: null, bw: null, over: [], ov: -1 };
+  res.inn.forEach((inn, k) => { evs.push({ k, innStart: true }); inn.log.forEach(l => evs.push({ k, l })); evs.push({ k, innEnd: true }); });
+  let i = 0, timer = null, speed = 320, finished = false, paused = false, tab = 'comm';
+  const blank = () => ({ runs: 0, wk: 0, balls: 0, started: false, overs: [], wks: [], ovStart: 0, bat: new Map(), bowl: new Map(), f4: 0, f6: 0 });
+  const st = [blank(), blank()];
+  let cur = { k: 0, s: null, n: null, bw: null, pt: null, over: [], ov: -1 };
   const target = res.inn[0].runs + 1;
-  modal(`<div class="row"><h2 style="margin:0">${res.stage === 'League' ? 'Match ' + res.no : res.stage}</h2><span class="muted">🏟️ ${esc(res.venue)}</span><div class="spacer"></div>
-      ${[['Slow', 900], ['Normal', 320], ['Fast', 90], ['Turbo', 12]].map(([l, v]) => `<button class="small mspd ${v === speed ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}
-      <button class="small" id="mcPause">⏸ Pause</button>
-      <button class="small danger" id="mcSkip">Skip to result</button></div>
-    <div class="muted" style="margin:6px 0">Toss: ${res.toss.winner} won and chose to ${res.toss.choice}${res.pitchNote ? ` · ${res.pitchNote}` : ''}${res.dew && res.dew !== 'none' ? ` · 💧 ${res.dew} dew expected` : ''}</div>
-    <div class="mc-score" id="mcScore"></div>
-    <div class="equation" id="mcEq"></div>
+  const mile = new Set();
+  const team = k => res.inn[k].team, opp = k => res.inn[1 - k].team;
+  modal(`<div class="mc">
+    <div class="mc-top"><h2>${res.stage === 'League' ? 'Match ' + res.no : esc(res.stage)}</h2><span class="muted mc-venue">🏟️ ${esc(res.venue)}</span><div class="spacer"></div>
+      <div class="seg">${[['Slow', 900], ['Normal', 320], ['Fast', 90], ['Turbo', 12]].map(([l, v]) => `<button class="small mspd ${v === speed ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>
+      <button class="small" id="mcPause">⏸</button></div>
+    <div class="mc-cond">🪙 ${res.toss.winner} won the toss and chose to ${res.toss.choice}${res.pitchNote ? ` · 🏏 ${res.pitchNote}` : ''}${res.dew && res.dew !== 'none' ? ` · 💧 ${res.dew} dew expected` : ''}</div>
+    <div class="mc-board" id="mcScore"></div>
+    <div class="mc-eq" id="mcEq"></div>
+    <div class="wp" id="mcWP"></div>
     <div class="mc-mid"><div class="panel" id="mcBat"></div><div class="panel" id="mcBowl"></div></div>
-    <div class="row"><span class="muted">This over:</span><div class="balls" id="mcBalls"></div></div>
-    <div class="comm" id="mcComm" style="margin-top:8px"></div>
-    <div id="mcEnd"></div>`, { wide: true, locked: true });
+    <div class="mc-over"><span class="muted">This over</span><div class="balls" id="mcBalls"></div></div>
+    <div class="row mc-skip"><button class="small" id="mcOver">⏭ End of over</button><button class="small" id="mcInn">⏭ End of innings</button><button class="small danger" id="mcSkip">⏭ Result</button></div>
+    <div class="tabs mc-tabs">${[['comm', '🎙️ Commentary'], ['card', '📋 Scorecard'], ['graph', '📊 Manhattan'], ['xi', '👥 XIs']].map(([k, l]) => `<button class="small ${k === tab ? 'on' : ''}" data-mt="${k}">${l}</button>`).join('')}</div>
+    <div class="comm" id="mcComm"></div><div id="mcPane" class="mc-pane hidden"></div>
+    <div id="mcEnd"></div><div class="flash hidden" id="mcFlash"></div></div>`, { wide: true, locked: true });
   $$('.mspd').forEach(b => b.onclick = () => { speed = +b.dataset.v; $$('.mspd').forEach(x => x.classList.toggle('on', x === b)); });
-  $('#mcPause').onclick = () => { paused = !paused; $('#mcPause').textContent = paused ? '▶ Resume' : '⏸ Pause'; if (!paused && !finished) { clearTimeout(timer); step(); } };
-  $('#mcSkip').onclick = () => { paused = false; clearTimeout(timer); while (i < evs.length) apply(evs[i++], true); draw(); finish(); };
+  const resume = () => { if (!paused && !finished) { clearTimeout(timer); step(); } };
+  $('#mcPause').onclick = () => { paused = !paused; $('#mcPause').textContent = paused ? '▶' : '⏸'; $('#mcPause').classList.toggle('on', paused); resume(); };
+  const jump = until => { clearTimeout(timer); while (i < evs.length) { const e = evs[i++]; apply(e, true); if (until(e)) break; } draw(); if (i >= evs.length) finish(); else if (!paused) timer = setTimeout(step, Math.max(speed, 400)); };
+  $('#mcOver').onclick = () => jump(e => e.innEnd || (e.l && e.l.ev === 'end'));
+  $('#mcInn').onclick = () => jump(e => e.innEnd);
+  $('#mcSkip').onclick = () => { paused = false; jump(() => false); };
+  $$('[data-mt]').forEach(b => b.onclick = () => { tab = b.dataset.mt; $$('[data-mt]').forEach(x => x.classList.toggle('on', x === b)); drawPane(); });
 
   function teamBox(k) {
-    const inn = res.inn[k], s = st[k];
-    return `<div class="mc-team ${cur.k === k && !finished ? 'batting' : ''}">${chip(inn.team, 'lg')}<div><div class="sc">${s.started ? `${s.runs}/${s.wk}` : '—'}</div><div class="muted">${s.started ? `${oversStr(s.balls)} ov` : 'Yet to bat'}</div></div></div>`;
+    const inn = res.inn[k], s = st[k], id = inn.team;
+    return `<div class="mc-team ${cur.k === k && !finished ? 'batting' : ''}" style="--tc:${tint(id)}">${chip(id, 'lg')}
+      <div><div class="sc">${s.started ? `${s.runs}/${s.wk}` : '—'}</div><div class="muted">${s.started ? `${oversStr(s.balls)} ov · RR ${(s.runs / Math.max(1, s.balls) * 6).toFixed(2)}` : k === 1 && st[0].started ? 'Yet to bat' : 'Yet to bat'}</div></div></div>`;
   }
   function draw() {
     $('#mcScore').innerHTML = teamBox(0) + teamBox(1);
     const s = st[cur.k];
-    if (cur.k === 1 && s.started && !finished) {
-      const need = target - s.runs, bl = 120 - s.balls;
-      $('#mcEq').innerHTML = need > 0 ? `${res.inn[1].short} need <span class="gold">${need}</span> off <span class="gold">${bl}</span> balls · RRR ${(need / Math.max(1, bl) * 6).toFixed(2)}` : '';
-    } else if (cur.k === 0 && s.started && !finished) $('#mcEq').innerHTML = `CRR ${(s.runs / Math.max(1, s.balls) * 6).toFixed(2)}`;
+    let eq = '';
+    if (!finished && cur.k === 0 && s.done) eq = `<b>Innings break</b> · ${chip(team(1))} need <b class="gold">${target}</b> to win`;
+    else if (!finished && s.started) {
+      if (cur.k === 1) {
+        const need = target - s.runs, bl = 120 - s.balls;
+        eq = need > 0 ? `${team(1)} need <b class="gold">${need}</b> off <b class="gold">${bl}</b> · RRR <b>${(need / Math.max(1, bl) * 6).toFixed(2)}</b>` : '';
+      } else {
+        const crr = s.runs / Math.max(1, s.balls) * 6;
+        eq = `CRR <b>${crr.toFixed(2)}</b> · Projected <b>${Math.round(s.runs + (120 - s.balls) / 6 * crr)}</b>${s.balls >= 30 ? ` <span class="muted">(par ${res.par || 186})</span>` : ''}`;
+      }
+    }
+    $('#mcEq').innerHTML = eq;
+    const pA = finished ? (res.winner === team(0) ? 1 : 0) : winProb(res, cur.k, s, target);
+    $('#mcWP').innerHTML = `<span>${chip(team(0))} ${Math.round(pA * 100)}%</span><div class="wpbar"><i style="width:${(pA * 100).toFixed(1)}%;background:${tint(team(0))}"></i><i style="width:${(100 - pA * 100).toFixed(1)}%;background:${tint(team(1))}"></i></div><span>${Math.round((1 - pA) * 100)}% ${chip(team(1))}</span>`;
     if (cur.s) {
-      $('#mcBat').innerHTML = `<h3>At the crease</h3><div>🏏 <b>${esc(cur.s[0])}</b> ${cur.s[1]} (${cur.s[2]})${cur.s[3] ? ' <span class="red-t">OUT</span>' : '*'}</div>${cur.n ? `<div>🏏 ${esc(cur.n[0])} ${cur.n[1]} (${cur.n[2]})</div>` : ''}`;
-      $('#mcBowl').innerHTML = `<h3>Bowling</h3><div>🎯 <b>${esc(cur.bw[0])}</b> ${oversStr(cur.bw[1])}-${cur.bw[2]}-${cur.bw[3]}</div>`;
+      const b = (x, on) => x ? `<div class="mc-bt ${on ? 'on' : ''}"><span>${on ? '🏏' : ''} <b>${esc(x[0])}</b>${x[3] === true && on ? ' <span class="red-t">OUT</span>' : on ? '*' : ''}</span><span class="fig"><b>${x[1]}</b> (${x[2]}) <span class="muted">${on ? `${x[4] || 0}×4 ${x[5] || 0}×6` : `${x[3] || 0}×4 ${x[4] || 0}×6`} · SR ${x[2] ? (x[1] / x[2] * 100).toFixed(0) : '–'}</span></span></div>` : '';
+      $('#mcBat').innerHTML = `<h3>At the crease</h3>${b(cur.s, true)}${b(cur.n, false)}${cur.pt ? `<div class="muted" style="font-size:12px;margin-top:4px">Partnership <b>${cur.pt[0]}</b> (${cur.pt[1]})</div>` : ''}`;
+      const bw = cur.bw;
+      $('#mcBowl').innerHTML = `<h3>Bowling</h3><div class="mc-bt on"><span>🎯 <b>${esc(bw[0])}</b></span><span class="fig"><b>${oversStr(bw[1])}-${bw[2]}-${bw[3]}</b> <span class="muted">econ ${bw[1] ? (bw[2] / bw[1] * 6).toFixed(2) : '–'}${bw[4] != null ? ` · ${bw[4]} dots` : ''}</span></span></div>
+        ${(() => { const others = Array.from(st[cur.k].bowl.entries()).filter(([n]) => n !== bw[0]).sort((a, b) => b[1].w - a[1].w || a[1].r - b[1].r).slice(0, 2); return others.map(([n, f]) => `<div class="mc-bt"><span>${esc(n)}</span><span class="fig">${oversStr(f.balls)}-${f.r}-${f.w}</span></div>`).join(''); })()}`;
     }
     $('#mcBalls').innerHTML = cur.over.map(b => `<span class="ball ${b.c}">${b.t}</span>`).join('');
+    if (tab !== 'comm') drawPane();
+  }
+  function drawPane() {
+    const c = $('#mcComm'), p = $('#mcPane');
+    c.classList.toggle('hidden', tab !== 'comm'); p.classList.toggle('hidden', tab === 'comm');
+    if (tab === 'graph') p.innerHTML = manhattanSVG(st.filter(x => x.started).map((x, k) => ({ team: team(k), overs: x.overs, wks: x.wks })));
+    else if (tab === 'card') p.innerHTML = st.map((x, k) => !x.started ? '' : `<h3 style="margin-top:6px">${chip(team(k))} ${x.runs}/${x.wk} <span class="muted">(${oversStr(x.balls)})</span></h3>
+      <div class="scroll"><table class="scorecard"><tr><th>Batter</th><th></th><th class="num">R</th><th class="num">B</th><th class="num">4s</th><th class="num">6s</th></tr>
+      ${Array.from(x.bat.entries()).map(([n, b]) => `<tr><td>${esc(n)}</td><td class="how">${b.out ? esc(b.out) : '<b class="green-t">not out</b>'}</td><td class="num"><b>${b.r}</b></td><td class="num">${b.b}</td><td class="num">${b.f4}</td><td class="num">${b.f6}</td></tr>`).join('')}</table></div>
+      <div class="scroll"><table class="scorecard"><tr><th>Bowler</th><th class="num">O</th><th class="num">R</th><th class="num">W</th><th class="num">Econ</th></tr>
+      ${Array.from(x.bowl.entries()).map(([n, b]) => `<tr><td>${esc(n)}</td><td class="num">${oversStr(b.balls)}</td><td class="num">${b.r}</td><td class="num"><b>${b.w}</b></td><td class="num">${b.balls ? (b.r / b.balls * 6).toFixed(2) : '–'}</td></tr>`).join('')}</table></div>`).join('');
+    else if (tab === 'xi') p.innerHTML = `<div class="grid2 even">${[0, 1].map(k => { const id = team(k), sub = res.impact && res.impact[id], xi = (res.xi && res.xi[id]) || [];
+      const order = (res.batOrder && res.batOrder[id]) || xi;
+      return `<div><h3>${chip(id)} ${k === 0 ? 'batting first' : 'chasing'}</h3>${order.map((p, j) => `<div style="font-size:13px">${j + 1}. ${esc(p.name)} <span class="muted">${roleShort(p)}</span>${sub && sub.in === p ? ' <span class="tag rtm">IMPACT</span>' : ''}</div>`).join('')}
+        ${sub ? `<div class="muted" style="font-size:12px;margin-top:4px">🔁 ${esc(sub.in.name)} ${k === 0 ? 'comes on to bowl' : 'comes in to bat'} for ${esc(sub.out.name)} at the break</div>` : ''}</div>`; }).join('')}</div>`;
   }
   function addComm(txt, cls) {
     const c = $('#mcComm'); if (!c) return;
     const d = document.createElement('div'); d.className = cls || ''; d.innerHTML = txt; c.prepend(d);
-    while (c.children.length > 200) c.lastChild.remove();
+    while (c.children.length > 260) c.lastChild.remove();
+  }
+  function flash(txt, cls) {
+    if (speed < 60) return;
+    const f = $('#mcFlash'); if (!f) return;
+    f.className = 'flash ' + cls; f.innerHTML = txt; void f.offsetWidth; f.classList.add('show');
+    clearTimeout(G.flashT); G.flashT = setTimeout(() => f.classList.add('hidden'), Math.min(1100, speed * 2.6));
   }
   function apply(e, quiet) {
-    if (e.innEnd) {
-      const inn = res.inn[e.k];
-      if (e.k === 0) { if (!quiet) addComm(`<b>Innings break:</b> ${inn.short} ${inn.runs}/${inn.wk} (${oversStr(inn.balls)}). ${res.inn[1].short} need ${target} to win.`, 'cE'); cur = { k: 1, s: null, n: null, bw: null, over: [], ov: -1 }; }
+    if (e.innStart) {
+      cur = { k: e.k, s: null, n: null, bw: null, pt: null, over: [], ov: -1 };
+      if (e.k === 1) {
+        const subs = [0, 1].map(k => res.impact && res.impact[team(k)] ? [team(k), res.impact[team(k)]] : null).filter(Boolean);
+        subs.forEach(([id, sub]) => addComm(`🔁 <b>Impact Player</b> · ${chip(id)} <b>${esc(sub.in.name)}</b> comes in for ${esc(sub.out.name)} ${id === team(0) ? 'to strengthen the bowling' : 'to bat in the chase'}.`, 'cI'));
+      }
       return;
     }
-    const l = e.l; const s = st[e.k];
+    if (e.innEnd) {
+      const inn = res.inn[e.k]; st[e.k].done = true;
+      if (e.k === 0) addComm(`<b>Innings break</b> · ${chip(inn.team)} ${inn.runs}/${inn.wk} (${oversStr(inn.balls)}). ${chip(team(1))} need <b>${target}</b> to win.`, 'cE');
+      return;
+    }
+    const l = e.l, s = st[e.k];
     s.started = true; s.runs = l.runs; s.wk = l.wk;
-    if (l.ev === 'end') { if (!quiet) addComm(l.txt, 'cE'); return; }
-    if (l.ov !== cur.ov) { cur.ov = l.ov; cur.over = []; }
+    if (l.ev === 'end') {
+      const rr = s.runs / Math.max(1, s.balls) * 6;
+      if (!quiet) addComm(`<span class="ovsum">End of over ${l.ov + 1} · <b>${l.orun}</b> run${l.orun === 1 ? '' : 's'} · ${chip(team(e.k))} ${s.runs}/${s.wk} · RR ${rr.toFixed(2)}${l.bw ? ` · ${esc(l.bw[0])} ${oversStr(l.bw[1])}-${l.bw[2]}-${l.bw[3]}` : ''}</span>`, 'cO');
+      return;
+    }
+    if (l.ov !== cur.ov) { cur.ov = l.ov; cur.over = []; s.ovStart = s.overs.reduce((a, b) => a + (b || 0), 0); }
+    s.overs[l.ov] = l.runs - s.ovStart;
+    if (l.ev === 'W') s.wks[l.ov] = (s.wks[l.ov] || 0) + 1;
     s.balls = l.ov * 6 + l.b;
-    cur.s = l.s; cur.n = l.n; cur.bw = l.bw;
+    cur.s = l.s; cur.n = l.n; cur.bw = l.bw; cur.pt = l.pt;
+    // live scorecard
+    if (l.s) { const o = s.bat.get(l.s[0]) || {}; s.bat.set(l.s[0], { r: l.s[1], b: l.s[2], f4: l.s[4] || 0, f6: l.s[5] || 0, out: l.s[3] ? (l.how || o.out || 'out') : null }); }
+    if (l.n && !s.bat.has(l.n[0])) s.bat.set(l.n[0], { r: l.n[1], b: l.n[2], f4: l.n[3] || 0, f6: l.n[4] || 0, out: null });
+    if (l.bw) s.bowl.set(l.bw[0], { balls: l.bw[1], r: l.bw[2], w: l.bw[3] });
     const t = l.ev === 'wd' ? 'wd' : l.ev === 'W' ? 'W' : l.lb ? (l.nb ? 'nb' : '') + l.xr + 'lb' : (l.nb ? 'nb' : '') + l.ev;
     const c = l.ev === 'W' ? 'bW' : l.lb ? 'bx' : l.ev === 6 ? 'b6' : l.ev === 4 ? 'b4' : (l.ev === 'wd' || l.nb) ? 'bx' : '';
     cur.over.push({ t, c });
-    if (!quiet) addComm(`<span class="muted">${l.ov}.${l.b}</span> ${esc(l.txt)}`, l.ev === 'W' ? 'cW' : l.ev === 6 ? 'c6' : l.ev === 4 ? 'c4' : '');
+    if (quiet) return;
+    addComm(`<span class="muted">${l.ov}.${l.b}</span> ${esc(l.txt)}`, l.ev === 'W' ? 'cW' : l.ev === 6 ? 'c6' : l.ev === 4 ? 'c4' : l.drop ? 'cD' : '');
+    if (l.ev === 'W') flash('WICKET!', 'fW'); else if (l.ev === 6) flash('SIX!', 'f6'); else if (l.ev === 4) flash('FOUR!', 'f4');
+    // milestones
+    if (l.s && !l.s[3]) for (const m of [50, 100]) if (l.s[1] >= m && !mile.has(e.k + l.s[0] + m)) {
+      mile.add(e.k + l.s[0] + m);
+      addComm(`${m === 100 ? '💯' : '🎉'} <b>${m === 100 ? 'CENTURY' : 'FIFTY'}!</b> ${esc(l.s[0])} reaches ${m} off ${l.s[2]} balls.`, 'cM');
+      flash(m === 100 ? '💯 HUNDRED!' : '🎉 FIFTY!', 'fM');
+    }
+    if (l.ev === 'W' && l.bw && l.bw[3] >= 3 && !mile.has(e.k + l.bw[0] + 'w' + l.bw[3])) { mile.add(e.k + l.bw[0] + 'w' + l.bw[3]); addComm(`🔥 <b>${esc(l.bw[0])}</b> has ${l.bw[3]} wickets!`, 'cM'); }
   }
   function step() {
     if (paused) return;
     if (i >= evs.length) { finish(); return; }
     const e = evs[i++]; apply(e); draw();
     let d = speed;
-    if (e.innEnd) d = Math.max(1200, speed * 3);
-    else if (e.l.ev === 'W' || e.l.ev === 6) d = speed * 2;
-    else if (e.l.ev === 4 || e.l.ev === 'end') d = speed * 1.5;
+    if (e.innStart) d = 10;
+    else if (e.innEnd) d = Math.max(1400, speed * 3);
+    else if (e.l.ev === 'W' || e.l.ev === 6) d = speed * 2.2;
+    else if (e.l.ev === 4 || e.l.ev === 'end') d = speed * 1.6;
     timer = setTimeout(step, d);
   }
   function finish() {
     if (finished) return; finished = true; draw();
-    const won = res.winner === G.userId;
+    const mine = res.home === G.userId || res.away === G.userId, won = res.winner === G.userId;
     const so = res.superOver ? `<p class="gold">⚡ SUPER OVER! ${res.superOver.map(([a, b]) => `${a.short} ${a.runs}/${a.wk} v ${b.short} ${b.runs}/${b.wk}`).join(' · then ')}</p>` : '';
     $('#mcEq').innerHTML = '';
-    $('#mcEnd').innerHTML = `<div class="banner" style="margin-top:12px;background:${won ? 'linear-gradient(135deg,#1f7a4a,#0f3d26)' : 'linear-gradient(135deg,#7a1f2b,#3d0f16)'}">
-      <h1>${won ? '🎉 VICTORY!' : '😞 DEFEAT'}</h1><div style="font-size:18px">${esc(TBY[res.winner].name)} ${esc(res.margin)}</div>
+    $$('.mc-skip button').forEach(b => b.disabled = true);
+    $('#mcEnd').innerHTML = `<div class="banner" style="margin-top:12px;background:${!mine ? `linear-gradient(135deg, ${TBY[res.winner].color}, ${shade(TBY[res.winner].color)})` : won ? 'linear-gradient(135deg,#1f7a4a,#0f3d26)' : 'linear-gradient(135deg,#7a1f2b,#3d0f16)'}">
+      <h1>${!mine ? esc(TBY[res.winner].short) + ' WIN' : won ? '🎉 VICTORY!' : '😞 DEFEAT'}</h1><div style="font-size:18px">${esc(TBY[res.winner].name)} ${esc(res.margin)}</div>
       <div>Player of the Match: <b class="gold">${esc(res.motm ? res.motm.name : '-')}</b></div>${so}</div>
       <div class="row" style="justify-content:center"><button id="mcCard">📋 Full scorecard</button><button class="primary" id="mcCont">Continue →</button></div>`;
     $('#mcCard').onclick = () => { G.onModalClose = null; showScorecardThen(res, after); };
     $('#mcCont').onclick = () => { closeModal(); after && after(); };
+    $('#mcEnd').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
   draw(); step();
 }
@@ -1036,7 +1309,7 @@ function renderEnd() {
   $('#screen').innerHTML = `
   <div class="wrap">
     <div class="banner" style="background:linear-gradient(135deg, ${champ.color}, ${shade(champ.color)});color:${champ.fg}">
-      <div style="font-size:54px">🏆</div><h1>${esc(champ.name)} are IPL 2027 Champions!</h1>
+      <div style="font-size:54px">🏆</div><h1>${esc(champ.name)} are IPL ${S.year} Champions!</h1>
       <div style="font-size:16px">Final at Narendra Modi Stadium: ${fin.inn[0].short} ${fin.inn[0].runs}/${fin.inn[0].wk} v ${fin.inn[1].short} ${fin.inn[1].runs}/${fin.inn[1].wk}. ${esc(TBY[fin.winner].short)} ${esc(fin.margin)}. POTM: ${esc(fin.motm.name)}</div>
       <div style="margin-top:8px"><button class="small" id="finalCard" style="background:#0006;color:#fff">📋 Final scorecard</button></div></div>
     <div class="grid2">
@@ -1071,19 +1344,130 @@ function renderEnd() {
       </div>
     </div>
     <div class="row" style="justify-content:center;margin:20px 0 40px">
-      <button class="primary bidbtn" id="resim">🔁 Re-simulate season (same squads)</button>
-      <button class="bidbtn" id="editXI">✏️ Change XI & re-sim</button>
+      <button class="primary bidbtn" id="toTrades">🔁 Off-season: trade window → IPL ${S.year + 1}</button>
+      <button class="bidbtn" id="resim">🔄 Replay IPL ${S.year} (same squads)</button>
+      <button class="bidbtn" id="editXI">✏️ Change XI & replay</button>
       <button class="bidbtn" id="newAuc">🆕 New auction</button>
     </div>
   </div>`;
   $('#finalCard').onclick = () => showScorecard(fin);
   $$('[data-po]').forEach(d => d.onclick = () => showScorecard(S.playoffs.find(f => f.stage === d.dataset.po).result));
-  $('#resim').onclick = () => { G.season = Season.create(G.teams, G.userId); G.tab = 'results'; renderSeason(); };
+  $('#toTrades').onclick = () => { window.scrollTo(0, 0); openTradeWindow(); };
+  $('#resim').onclick = () => { G.season = Season.create(G.teams, G.userId, G.year); G.newsSeen = 0; G.tab = 'results'; renderSeason(); };
   $('#editXI').onclick = () => renderPost();
   $('#newAuc').onclick = () => {
     modal(`<h2>Start a brand-new auction?</h2><p class="muted">All current squads and season results will be lost.</p>
       <div class="row" style="justify-content:flex-end"><button data-close>Cancel</button><button class="danger" id="confNew">Start new auction</button></div>`);
-    $('#confNew').onclick = () => { closeModal(); G.teams = null; G.season = null; G.forecast = null; G.userId = null; window.scrollTo(0, 0); renderHome(); };
+    $('#confNew').onclick = () => { closeModal(); G.teams = null; G.season = null; G.forecast = null; G.userId = null; G.tradeHistory = []; G.tradeWin = null; setYear(2027); window.scrollTo(0, 0); renderHome(); };
+  };
+}
+
+/* =====================================================================
+   OFF-SEASON TRADE WINDOW
+   ===================================================================== */
+function setYear(y) { G.year = y; const s = $('.logo span'); if (s) s.textContent = y; }
+const names = ps => ps.map(p => `<b>${esc(p.name)}</b>`).join(' + ');
+function tradeLine(e) {
+  const cash = e.give.length && e.get.length ? '' : e.get.length ? ' <span class="muted">(cash)</span>' : ' <span class="muted">(sold for cash)</span>';
+  const left = e.get.length ? names(e.get) : '<span class="muted">cash</span>', right = e.give.length ? names(e.give) : '<span class="muted">cash</span>';
+  return `<div class="trline ${e.a === G.userId || e.b === G.userId ? 'mine' : ''}">🔁 ${chip(e.a)} get ${left} · ${chip(e.b)} get ${right}${cash}</div>`;
+}
+const TRADE_RULES = `<ul class="rules-list">
+  <li><b>When:</b> the window opens a month after the season and runs until a week before the auction, then reopens after the auction until a month before the next season. Nobody trades <b>during</b> an auction.</li>
+  <li><b>Auction buys:</b> players bought at an auction can't be traded in the window straight after it. So after this game's mega auction, trading opens now, in the off-season.</li>
+  <li><b>Deals:</b> a player-for-player swap, or a one-way <b>all-cash</b> deal. The player keeps his salary and purses adjust by the difference. Any transfer fee is private and doesn't touch the purse.</li>
+  <li><b>Limits:</b> each player can be traded once per window. Squads stay at 18–25 with at most 8 overseas, and no purse can go below zero.</li></ul>`;
+function openTradeWindow() {
+  G.tradeWin = Trade.open(G.teams, G.userId, G.year + 1);
+  G.tradeWin.news.forEach(e => G.tradeHistory.push({ ...e, year: G.year + 1 }));
+  G.tr = { partner: null, give: new Set(), get: new Set(), resp: null };
+  renderTrades();
+  if (G.tradeWin.offers.length) setTimeout(() => toast(`📨 ${G.tradeWin.offers.length} trade offer${G.tradeWin.offers.length > 1 ? 's' : ''} waiting for you`, 3200), 400);
+}
+function renderTrades() {
+  G.screen = 'trades';
+  const win = G.tradeWin, tr = G.tr, U = win.byId[G.userId], ny = win.year;
+  const P = tr.partner && win.byId[tr.partner];
+  setTop(`${chip(G.userId)} <span class="muted">Off-season · before IPL ${ny}</span> <b class="gold">${fmt(U.purse)}</b>`);
+  const xiOf = T => new Set(Engine.autoSelect(T.squad).xi.map(p => p.id));
+  const row = (T, p, kind, set, xi) => {
+    const moved = win.moved.has(p.id);
+    return `<label class="trow ${set.has(p.id) ? 'on' : ''} ${moved ? 'off' : ''}"><input type="checkbox" data-${kind}="${p.id}" ${set.has(p.id) ? 'checked' : ''} ${moved ? 'disabled' : ''}>
+      <span class="nm">${flag(p)} ${pl(p)}${p.ovs ? ' <span class="muted">✈</span>' : ''}${xi.has(p.id) ? ' <span class="tag">XI</span>' : ''}${moved ? ' <span class="tag">traded</span>' : ''}</span>
+      <span class="muted rl">${roleShort(p)}</span><b class="ov">${p.ovr}</b><span class="sal">${fmt(Trade.salary(T, p))}</span></label>`;
+  };
+  const ord = { WK: 0, BAT: 1, AR: 2, BOWL: 3 };
+  const sortSq = sq => sq.slice().sort((a, b) => ord[a.role] - ord[b.role] || b.ovr - a.ovr);
+  const give = U.squad.filter(p => tr.give.has(p.id)), get = P ? P.squad.filter(p => tr.get.has(p.id)) : [];
+  const out = give.reduce((s, p) => s + Trade.salary(U, p), 0), inn = P ? get.reduce((s, p) => s + Trade.salary(P, p), 0) : 0;
+  const why = P ? Trade.check(win, G.userId, P.id, give, get) : 'Pick a franchise to trade with.';
+  const resp = tr.resp;
+  $('#screen').innerHTML = `<div class="wrap">
+    <div class="banner" style="background:linear-gradient(135deg,#243049,#121722)"><h1>🔁 Trade window</h1><div>Off-season before IPL ${ny} · swaps and all-cash deals</div></div>
+    <div class="grid2">
+      <div>
+        <div class="panel">
+          <h3>Build a trade</h3>
+          <div class="tchips">${G.teams.filter(t => t.id !== G.userId).map(t => `<button class="small ${tr.partner === t.id ? 'on' : ''}" data-partner="${t.id}">${chip(t.id)}</button>`).join('')}</div>
+          ${P ? `<div class="muted" style="font-size:12px;margin:6px 0">${esc(TBY[P.id].name)} · ${P.squad.length} players · ${P.squad.filter(p => p.ovs).length} overseas · purse ${fmt(P.purse)} · ${esc(TBY[P.id].persona.label)}</div>` : '<div class="muted" style="margin:6px 0">Choose a franchise above to see their squad.</div>'}
+          <div class="grid2 even tr-cols">
+            <div><h4>You give <span class="muted">(${U.squad.length} in squad)</span></h4><div class="trlist">${sortSq(U.squad).map(p => row(U, p, 'give', tr.give, xiOf(U))).join('')}</div></div>
+            <div><h4>You get ${P ? chip(P.id) : ''}</h4><div class="trlist">${P ? sortSq(P.squad).map(p => row(P, p, 'get', tr.get, xiOf(P))).join('') : '<div class="muted">—</div>'}</div></div>
+          </div>
+          <div class="tr-sum">
+            <div>You give ${give.length ? names(give) : '<span class="muted">nothing</span>'} <span class="muted">${fmt(out)}</span> · you get ${get.length ? names(get) : '<span class="muted">nothing</span>'} <span class="muted">${fmt(inn)}</span></div>
+            <div class="muted">Your purse ${fmt(U.purse)} → <b class="${U.purse + out - inn < 0 ? 'red-t' : 'gold'}">${fmt(U.purse + out - inn)}</b> · squad ${U.squad.length} → <b>${U.squad.length - give.length + get.length}</b></div>
+            ${why && (give.length || get.length) ? `<div class="errs" style="margin-top:6px">${esc(why)}</div>` : ''}
+            <div class="row" style="margin-top:8px"><button class="primary" id="trPropose" ${why ? 'disabled' : ''}>📨 Propose trade</button><button id="trSuggest" ${P && get.length ? '' : 'disabled'}>🤝 What would they want?</button><button class="small ghost" id="trClear" ${give.length || get.length ? '' : 'disabled'}>Clear</button></div>
+            ${resp ? `<div class="tr-resp ${resp.ok ? 'ok' : resp.kind || 'no'}">${resp.html}${resp.interest != null ? `<div class="meter"><i style="width:${(resp.interest * 100).toFixed(0)}%"></i></div>` : ''}</div>` : ''}
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="panel"><h3>📨 Offers for you</h3>${win.offers.length ? win.offers.map((o, k) => `<div class="offer">${chip(o.from)} offer ${o.get.length ? names(o.get) : `<b class="gold">${fmt(o.give.reduce((s, p) => s + Trade.salary(U, p), 0))}</b> cash`} for your ${names(o.give)}
+          <div class="row" style="margin-top:6px"><button class="small green" data-acc="${k}">✅ Accept</button><button class="small" data-dec="${k}">Decline</button><button class="small ghost" data-load="${k}">Load in builder</button></div></div>`).join('') : '<div class="muted">No offers right now.</div>'}</div>
+        <div class="panel" style="margin-top:14px"><h3>📰 Trade news</h3>${win.log.length ? win.log.slice().reverse().map(tradeLine).join('') : '<div class="muted">Quiet so far.</div>'}</div>
+        <div class="panel" style="margin-top:14px"><h3>📜 How IPL trades work</h3>${TRADE_RULES}</div>
+      </div>
+    </div>
+    <div class="row" style="justify-content:center;margin:20px 0 40px"><button class="primary bidbtn" id="trDone">Close the window → IPL ${ny} squad</button></div>
+  </div>`;
+  $$('[data-partner]').forEach(b => b.onclick = () => { tr.partner = b.dataset.partner; tr.get.clear(); tr.resp = null; renderTrades(); });
+  $$('[data-give]').forEach(c => c.onchange = () => { const id = +c.dataset.give; c.checked ? tr.give.add(id) : tr.give.delete(id); tr.resp = null; renderTrades(); });
+  $$('[data-get]').forEach(c => c.onchange = () => { const id = +c.dataset.get; c.checked ? tr.get.add(id) : tr.get.delete(id); tr.resp = null; renderTrades(); });
+  $('#trClear').onclick = () => { tr.give.clear(); tr.get.clear(); tr.resp = null; renderTrades(); };
+  $('#trPropose').onclick = () => {
+    const r = Trade.propose(win, G.userId, P.id, give, get);
+    if (r.accepted) {
+      const e = Trade.execute(win, G.userId, P.id, give, get);
+      G.tradeHistory.push({ ...e, year: ny });
+      tr.give.clear(); tr.get.clear();
+      tr.resp = { ok: true, html: `✅ <b>Deal done!</b> ${get.length ? names(get) + ' join' + (get.length > 1 ? '' : 's') + ' you' : 'Sold'}${give.length ? `, ${names(give)} head${give.length > 1 ? '' : 's'} to ${chip(P.id)}` : ''}.` };
+      toast(`🔁 Trade done with ${chip(P.id)}`);
+    } else tr.resp = { ok: false, html: `❌ ${esc(r.why)}`, interest: r.legal ? r.interest : null };
+    renderTrades();
+  };
+  $('#trSuggest').onclick = () => {
+    const sg = Trade.suggest(win, P.id, get);
+    if (!sg) tr.resp = { ok: false, html: `🤷 ${chip(P.id)} won't part with ${names(get)} for anything you can offer right now.` };
+    else { tr.give = new Set(sg.give.map(p => p.id)); tr.resp = { ok: false, kind: 'hint', html: `🤝 ${chip(P.id)} would accept ${sg.give.length ? names(sg.give) : '<b>cash</b> (his salary)'} for ${names(get)}. Tap <b>Propose</b> to do the deal.` }; }
+    renderTrades();
+  };
+  $$('[data-acc]').forEach(b => b.onclick = () => {
+    const o = win.offers[+b.dataset.acc];
+    const bad = Trade.check(win, G.userId, o.from, o.give, o.get);
+    if (bad) { toast('⚠️ ' + esc(bad)); win.offers.splice(+b.dataset.acc, 1); renderTrades(); return; }
+    const e = Trade.execute(win, G.userId, o.from, o.give, o.get);
+    G.tradeHistory.push({ ...e, year: ny });
+    toast(`🔁 Trade done with ${chip(o.from)}`); renderTrades();
+  });
+  $$('[data-dec]').forEach(b => b.onclick = () => { win.offers.splice(+b.dataset.dec, 1); renderTrades(); });
+  $$('[data-load]').forEach(b => b.onclick = () => { const o = win.offers[+b.dataset.load]; tr.partner = o.from; tr.give = new Set(o.give.map(p => p.id)); tr.get = new Set(o.get.map(p => p.id)); tr.resp = null; renderTrades(); });
+  $('#trDone').onclick = () => {
+    for (const T of G.teams) if (T.id !== G.userId) T.sel = Engine.autoSelect(T.squad);
+    Trade.fixSel(myTeam(), false);
+    setYear(ny); G.season = null; G.forecast = null; G.tradeWin = null; G.tab = 'results';
+    window.scrollTo(0, 0); renderPost();
   };
 }
 
@@ -1095,12 +1479,16 @@ function showPlayer(id) {
   const S = AS();
   const sale = S.sales && S.sales.find(x => x.p.id === id);
   const st = G.season ? G.season.stats.get(id) : null;
+  // where he is now, after any trades
+  const now = G.teams && G.teams.find(t => t.squad.some(x => x.id === id));
+  const moves = (G.tradeHistory || []).filter(e => e.give.concat(e.get).some(x => x.id === id));
+  const nowLine = now && (moves.length || G.year !== 2027) ? `<p>📍 Now at ${chip(now.id)} on <b class="gold">${fmt(Trade.salary(now, p))}</b>${moves.map(e => { const toA = e.get.some(x => x.id === id); return ` · 🔁 ${toA ? e.b : e.a} → ${toA ? e.a : e.b} (${e.year} window)`; }).join('')}</p>` : '';
   let auctionLine = '';
   if (sale) auctionLine = `🔨 Sold to ${chip(sale.team)} for <b class="gold">${fmt(sale.price)}</b>${sale.how === 'rtm' ? ' <span class="tag rtm">RTM</span>' : sale.how === 'fill' ? ' <span class="muted">(squad top-up)</span>' : ''}`;
   else if (S.started && S.lot && S.lot.p.id === id && !S.lot.done) auctionLine = '🎙️ On the block right now!';
   else if (S.started && S.lots.slice(S.idx).some(e => e.p.id === id)) auctionLine = `⏳ Still to come in the auction (${esc(S.lots.slice(S.idx).find(e => e.p.id === id).set)})`;
   else if (S.started) auctionLine = '❌ Unsold';
-  const seasonLine = st && st.m ? `<div class="statline" style="border-left-color:var(--accent)">🏏 IPL 2027: ${st.m} matches · <b>${st.r}</b> runs${st.b ? ` @ SR ${(st.r / st.b * 100).toFixed(1)}` : ''}${st.inns ? ` · HS ${st.hs}${st.hsNo ? '*' : ''}` : ''} · ${st.f6} sixes${st.bb ? ` · <b>${st.wk}</b> wkts @ econ ${(st.rc / st.bb * 6).toFixed(2)}${st.best ? ` · best ${st.best.w}/${st.best.r}` : ''}` : ''}${st.motm ? ` · ${st.motm}× POTM` : ''}</div>` : '';
+  const seasonLine = st && st.m ? `<div class="statline" style="border-left-color:var(--accent)">🏏 IPL ${G.season.year}: ${st.m} matches · <b>${st.r}</b> runs${st.b ? ` @ SR ${(st.r / st.b * 100).toFixed(1)}` : ''}${st.inns ? ` · HS ${st.hs}${st.hsNo ? '*' : ''}` : ''} · ${st.f6} sixes${st.bb ? ` · <b>${st.wk}</b> wkts @ econ ${(st.rc / st.bb * 6).toFixed(2)}${st.best ? ` · best ${st.best.w}/${st.best.r}` : ''}` : ''}${st.motm ? ` · ${st.motm}× POTM` : ''}</div>` : '';
   modal(`<div style="display:flex;gap:12px;align-items:center">
       <div class="ovr ${ovrClass(p.ovr)}">${p.ovr}<small>OVR</small></div>
       <div><h2 style="margin:0">${flag(p)} ${esc(p.name)}</h2>
@@ -1111,7 +1499,7 @@ function showPlayer(id) {
     ${p.stat ? `<div class="statline">📊 ${esc(p.stat)}</div>` : ''}
     ${seasonLine}
     <p class="muted">2026 team: ${p.prev ? chip(p.prev) + ' ' + esc(TBY[p.prev].name) : 'Free agent'} · Base price ${fmt(p.base)}</p>
-    ${auctionLine ? `<p>${auctionLine}</p>` : ''}
+    ${auctionLine ? `<p>${auctionLine}</p>` : ''}${nowLine}
     <div class="row" style="justify-content:flex-end"><button data-close>Close</button></div>`);
 }
 
@@ -1126,7 +1514,7 @@ function showSeasonTeam(id) {
     <div class="grid2 even">
       <div><h3>Batting</h3>${pr.lineup.map((p, i) => `<div style="font-size:13px">${i + 1}. ${pl(p)} <span class="muted">${p.batR}</span></div>`).join('')}</div>
       <div><h3>Bowling attack</h3>${pr.bowlers.slice(0, 6).map(p => `<div style="font-size:13px">${pl(p)} <span class="muted">${p.bt ? BOWL_TYPE[p.bt] : 'part-timer'}</span></div>`).join('')}
-        ${side.sel.impact ? `<div class="muted" style="font-size:12px;margin-top:6px">Impact: ${esc(side.sel.impact.name)} for ${esc(side.sel.replaced ? side.sel.replaced.name : '—')}</div>` : ''}</div>
+        ${pr.plan && pr.plan.partner ? `<div class="muted" style="font-size:12px;margin-top:6px">🔁 Impact pair: ${esc(pr.plan.flexBat.name)} (bat) ⇄ ${esc(pr.plan.flexBowl.name)} (bowl), depending on the toss</div>` : ''}</div>
     </div>
     <h3 style="margin-top:12px">Season stats</h3>
     <div class="scroll"><table><tr><th>Player</th><th class="num">M</th><th class="num">Runs</th><th class="num">SR</th><th class="num">Wkts</th><th class="num">Econ</th></tr>
@@ -1137,7 +1525,7 @@ function showSeasonTeam(id) {
 
 function openXIModal() {
   const tm = myTeam();
-  const backup = { ...tm.sel, xi: tm.sel.xi.slice() };
+  const backup = { ...tm.sel, xi: tm.sel.xi.slice(), batOrder: tm.sel.batOrder && tm.sel.batOrder.slice(), bowlPlan: tm.sel.bowlPlan && tm.sel.bowlPlan.slice() };
   modal(`<h2>✏️ Change your Playing XI</h2><p class="muted">Changes apply from your next match.</p><div id="selEditor"></div>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button id="xiCancel">Cancel</button><button class="primary" id="xiSave">Save XI</button></div>`, { wide: true, locked: true });
   renderSelEditor();
