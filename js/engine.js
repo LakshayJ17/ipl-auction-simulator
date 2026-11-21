@@ -515,22 +515,53 @@ const Engine = (() => {
     }
     return sc;
   }
+  /* Player of the Match: what a player did, judged against how this game was scored, plus fielding,
+     Super Overs and the result. (impactScore stays the simpler number used for form.) */
+  function motmScore(res, p) {
+    const [i1, i2] = res.inn;
+    const rr = Math.max(6, (i1.runs + i2.runs) / Math.max(1, i1.balls + i2.balls) * 6); // the game's run rate
+    const k = Math.pow(9 / rr, 0.7); // runs count for more in a low-scoring game
+    const matchSR = rr / 6 * 100;
+    const team = res.squads[res.home].includes(p) ? res.home : res.away;
+    let sc = 0;
+    const field = (out, name) => {
+      if (!out) return 0;
+      if (out.startsWith('c ' + name + ' b ') || (out.startsWith('c & b ') && out.endsWith(' ' + name))) return 7;
+      if (out.startsWith('st ' + name + ' b ')) return 8;
+      if (out === `run out (${name})`) return 9;
+      return 0;
+    };
+    const innings = [i1, i2].concat(res.superOver ? res.superOver.flat() : []);
+    innings.forEach((inn, idx) => {
+      const so = idx > 1, w = so ? 1.5 : 1; // Super Over moments are high-leverage
+      for (const c of inn.bat) {
+        if (c.p === p && c.batted) {
+          sc += w * (c.r * k + c.f4 + c.f6 * 2);
+          if (!so && c.b >= 8) sc += clamp((c.r / c.b * 100 - matchSR) / 8, -12, 12) * Math.min(1, c.b / 20); // tempo, but a cameo isn't an innings
+          if (!so && idx === 1 && !c.out && res.winner === inn.team && c.r >= 25) sc += 10; // saw the chase home
+        }
+        if (inn.team !== team) sc += field(c.out, p.name); // catches, stumpings, run-outs
+      }
+      for (const b of inn.bowl) if (b.p === p) {
+        // a wicket is worth more the better the batter it removes
+        for (const c of inn.bat) if (c.out && !c.out.startsWith('run out') && c.out.endsWith('b ' + p.name)) sc += w * (14 + 0.12 * c.p.batR);
+        if (so) continue;
+        sc += b.dots * 0.8;
+        if (b.balls >= 6) sc += (rr - b.r / b.balls * 6) * (b.balls / 6) * 1.1;
+      }
+    });
+    return sc + (team === res.winner ? 30 : 0);
+  }
   function manOfMatch(res) {
     let best = null, bs = -1e9;
-    for (const inn of res.inn) {
-      const other = inn.team === res.home ? res.away : res.home;
-      const seen = new Map();
-      for (const c of inn.bat) seen.set(c.p, inn.team);
-      for (const b of inn.bowl) seen.set(b.p, other);
-      for (const [p, teamOf] of seen) {
-        const sc = impactScore(res, p.id) + (teamOf === res.winner ? 15 : 0);
-        if (sc > bs) { bs = sc; best = p; }
-      }
+    for (const p of new Set([...res.squads[res.home], ...res.squads[res.away]])) {
+      const sc = motmScore(res, p);
+      if (sc > bs) { bs = sc; best = p; }
     }
     return best;
   }
 
-  return { autoSelect, validateSelection, battingOrder, bowlingPool, prepare, playMatch, pickCaptain, oversStr, impactType, impactPlan, autoBowlPlan, planIssues, isBowlOption, gauss, slotOf, impactScore };
+  return { autoSelect, validateSelection, battingOrder, bowlingPool, prepare, playMatch, pickCaptain, oversStr, impactType, impactPlan, autoBowlPlan, planIssues, isBowlOption, gauss, slotOf, impactScore, motmScore };
 })();
 
 if (typeof module !== 'undefined') module.exports = Engine;

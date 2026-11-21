@@ -69,7 +69,8 @@ const RULES_HTML = `
       <p>You can set your own <b>batting order</b> and an over-by-over <b>bowling plan</b>.</p></div>
     <div class="panel"><h3>🔄 Trades</h3>
       <p>Swaps and all-cash deals, as in the IPL. The player keeps his salary and purses adjust.</p>
-      <p>Players bought at an auction can't be traded in the window straight after it, so the <b>trade window</b> opens in the off-season, before the next IPL.</p></div>
+      <p>Players bought at an auction can't be traded in the window straight after it, so the <b>trade window</b> opens in the off-season, before the next IPL.</p>
+      <p><b>During the season</b> there are no permanent trades, only <b>loans</b>. From league match 20 to 56 you can borrow players who have played fewer than 2 matches. They play for you for the rest of the season, but never against their parent team.</p></div>
     <div class="panel"><h3>📈 Ratings & sim</h3>
       <p>OVR is built from <b>IPL 2026 numbers</b> and recent form: Batting, Power, Bowling and Control.</p>
       <p>Tags such as <b>Death Specialist</b>, <b>Powerplay Specialist</b>, <b>Finisher</b> and <b>Anchor</b> change how players perform in the ball-by-ball engine. Venues matter too: Chepauk turns, Chinnaswamy flies.</p>
@@ -808,8 +809,16 @@ function impactPlanHTML(sel, plan) {
     <div><span class="tp-h">🎯 Bowl first</span> ${n(plan.flexBowl)} starts and bowls. ${bs.sub ? `For the chase 🔁 ${n(bs.sub.in)} comes in for ${n(bs.sub.out)}.` : `<span class="muted">${esc(plan.flexBat.name)} wouldn't strengthen the batting, so no swap.</span>`}</div>
   </div>`;
 }
+// the squad the XI editor works on: mid-season it includes players on loan
+function selTeam() {
+  const tm = myTeam();
+  if (!G.editSeason || !G.season) return tm;
+  const side = G.season.teams[G.userId];
+  return { id: tm.id, short: tm.short, name: tm.name, buys: tm.buys, squad: side.squad, get sel() { return tm.sel; }, set sel(v) { tm.sel = v; } };
+}
+const onLoan = p => G.editSeason && G.season ? G.season.loans.find(l => l.p === p && l.to === G.userId) : null;
 function renderSelEditor() {
-  const tm = myTeam(); const sel = tm.sel;
+  const tm = selTeam(); const sel = tm.sel;
   cleanSel(sel);
   const order = { WK: 0, BAT: 1, AR: 2, BOWL: 3 };
   const squad = tm.squad.slice().sort((a, b) => order[a.role] - order[b.role] || b.ovr - a.ovr);
@@ -836,7 +845,7 @@ function renderSelEditor() {
       <tr><th>XI</th><th>Player</th><th>Role</th><th class="num">OVR</th><th class="num hide-m">Bat</th><th class="num hide-m">Bowl</th><th class="num hide-m">Salary</th></tr>
       ${squad.map(p => `<tr class="${inXI.has(p.id) ? 'inxi' : ''} ${sel.impact && sel.impact.id === p.id ? 'isimp' : ''}"><td><input type="checkbox" data-pid="${p.id}" ${inXI.has(p.id) ? 'checked' : ''} aria-label="Pick ${esc(p.name)}"></td>
         <td>${pl(p)} ${p.ovs ? '<span class="muted">✈</span>' : ''} ${sel.impact && sel.impact.id === p.id ? '<span class="tag rtm">IMPACT</span>' : ''}${plan && plan.partner === p ? '<span class="tag">⇄ flex</span>' : ''}${sel.captain && sel.captain.id === p.id ? '<span class="tag">C</span>' : ''}</td>
-        <td>${roleShort(p)}</td><td class="num"><b>${p.ovr}</b></td><td class="num hide-m">${p.batR}</td><td class="num hide-m">${p.bt ? p.bowlR : '–'}</td><td class="num muted hide-m">${fmt(price(p.id))}</td></tr>`).join('')}
+        <td>${roleShort(p)}</td><td class="num"><b>${p.ovr}</b></td><td class="num hide-m">${p.batR}</td><td class="num hide-m">${p.bt ? p.bowlR : '–'}</td><td class="num muted hide-m">${onLoan(p) ? `<span class="tag">loan · ${onLoan(p).from}</span>` : fmt(price(p.id))}</td></tr>`).join('')}
     </table></div>
     <div class="impact-box">
       <div class="row">
@@ -920,6 +929,7 @@ function renderSeason() {
           <button id="editXIBtn">✏️ XI</button>
           ${S.phase === 'league' ? '<button id="endLeagueBtn">⏭ Sim league</button>' : '<button id="endAllBtn">⏭ Sim to Final</button>'}
         </div>
+        ${S.phase === 'league' ? `<div class="loanbar">${Season.loanWindow(S) ? `🤝 <b>Loan window open</b> until after match ${Season.LOAN.close} <button class="small green" id="loanBtn">Borrow a player</button>` : S.idx < Season.LOAN.open ? `<span class="muted">🤝 Mid-season loan window opens after match ${Season.LOAN.open}</span>` : '<span class="muted">🤝 Loan window closed for this season</span>'}</div>` : ''}
         ${!userAlive && S.phase === 'playoffs' ? '<p class="muted" style="text-align:center">You are out.</p>' : ''}
       </div>
       <div class="panel" style="margin-top:14px">
@@ -935,6 +945,7 @@ function renderSeason() {
   if (mine) $('#watchBtn').onclick = () => { const r = Season.playNext(S, true); watchMatch(r.res, () => renderSeason()); };
   $('#quickBtn').onclick = () => { const r = Season.playNext(S, true); if (mine) resultToast(r.res); renderSeason(); };
   $('#editXIBtn').onclick = openXIModal;
+  if ($('#loanBtn')) $('#loanBtn').onclick = openLoans;
   $$('tr[data-team]').forEach(tr => tr.onclick = () => showSeasonTeam(tr.dataset.team));
   $('#toMineBtn').onclick = () => { simUntil(() => { const f = Season.nextFixture(S); return !f || f.home === G.userId || f.away === G.userId; }, 'To your next match'); };
   if ($('#endLeagueBtn')) $('#endLeagueBtn').onclick = () => simUntil(() => S.phase !== 'league', 'Simulating the league');
@@ -969,15 +980,17 @@ function simUntil(stop, label) {
     if (n) toast(`⏩ Simmed ${n} match${n > 1 ? 'es' : ''}${w + l ? ` · you went <b>${w}-${l}</b>` : ''}`, 3200);
     renderSeason();
   };
-  const tick = () => {
+  const playOne = () => {
     const r = Season.playNext(S, true);
-    if (r) {
-      n++; feed.unshift(r.res);
-      if (r.res.home === G.userId || r.res.away === G.userId) { if (r.res.winner === G.userId) w++; else l++; }
-    }
-    if (!r || stop() || S.phase === 'done' || cancel) { draw(); setTimeout(done, cancel ? 0 : 450); return; }
-    if (delay === 0) { // instant: play the rest in one go, still drawing now and then
-      for (let k = 0; k < 6; k++) { if (stop() || S.phase === 'done') break; const r2 = Season.playNext(S, true); if (!r2) break; n++; feed.unshift(r2.res); if (r2.res.home === G.userId || r2.res.away === G.userId) { if (r2.res.winner === G.userId) w++; else l++; } }
+    if (r) { n++; feed.unshift(r.res); if (r.res.home === G.userId || r.res.away === G.userId) { if (r.res.winner === G.userId) w++; else l++; } }
+    return r;
+  };
+  // every match is followed by the stop check, so "my next match" never runs past it (also in instant mode)
+  const tick = () => {
+    const batch = delay === 0 ? 6 : 1;
+    for (let k = 0; k < batch; k++) {
+      const r = playOne();
+      if (!r || stop() || S.phase === 'done' || cancel) { draw(); setTimeout(done, cancel || delay === 0 ? 0 : 450); return; }
     }
     draw(); setTimeout(tick, delay);
   };
@@ -990,6 +1003,9 @@ function newsHTML(S) {
   if (n.inj.length) bits.push(`🚑 ${n.inj.map(x => `${esc(x.p.name)} <span class="muted">(${x.n})</span>`).join(', ')}`);
   if (n.hot.length) bits.push(`🔥 ${n.hot.map(p => esc(p.name)).join(', ')}`);
   if (n.cold.length) bits.push(`🥶 ${n.cold.map(p => esc(p.name)).join(', ')}`);
+  const fx = Season.nextFixture(S), opp = fx && (fx.home === G.userId ? fx.away : fx.away === G.userId ? fx.home : null);
+  const barred = (S.loans || []).filter(l => l.to === G.userId && l.from === opp);
+  if (barred.length) bits.push(`🤝 ${barred.map(l => esc(l.p.name)).join(', ')} can't play against ${opp}, his parent team (loan rule)`);
   return bits.length ? `<div class="news">${bits.map(b => `<div>${b}</div>`).join('')}</div>` : '';
 }
 function resultToast(res) {
@@ -1305,6 +1321,8 @@ function renderEnd() {
   const verdict = fc ? (me.rank < fc ? `🚀 Overachieved! Forecast had you ${Season.ordinal(fc)}.` : me.rank > fc ? `📉 Underachieved. Forecast had you ${Season.ordinal(fc)}.` : `🎯 Exactly as the forecast predicted (${Season.ordinal(fc)}).`) : '';
   const myStars = G.season.teams[G.userId].squad.map(p => S.stats.get(p.id)).sort((a, b) => Season.mvpPts(b) - Season.mvpPts(a)).slice(0, 5);
   setTop(`${chip(G.userId)} <span>${me.emoji} ${esc(me.label)}</span>`);
+  Trade.fixSel(myTeam(), false); // anyone on loan has gone back to his club
+  G.loanNo = null;
   const award = (ic, title, s, val) => s ? `<div class="award"><div class="ic">${ic}</div><div><div class="muted" style="font-size:12px">${title}</div><div>${chip(s.team)} <b>${pl(s.p)}</b></div><div class="gold">${val}</div></div></div>` : '';
   $('#screen').innerHTML = `
   <div class="wrap">
@@ -1376,7 +1394,8 @@ const TRADE_RULES = `<ul class="rules-list">
   <li><b>When:</b> the window opens a month after the season and runs until a week before the auction, then reopens after the auction until a month before the next season. Nobody trades <b>during</b> an auction.</li>
   <li><b>Auction buys:</b> players bought at an auction can't be traded in the window straight after it. So after this game's mega auction, trading opens now, in the off-season.</li>
   <li><b>Deals:</b> a player-for-player swap, or a one-way <b>all-cash</b> deal. The player keeps his salary and purses adjust by the difference. Any transfer fee is private and doesn't touch the purse.</li>
-  <li><b>Limits:</b> each player can be traded once per window. Squads stay at 18–25 with at most 8 overseas, and no purse can go below zero.</li></ul>`;
+  <li><b>Limits:</b> each player can be traded once per window. Squads stay at 18–25 with at most 8 overseas, and no purse can go below zero.</li>
+  <li><b>During the season:</b> no permanent trades. There's only the <b>mid-season loan window</b> (league matches 20–56) for players who have played fewer than 2 matches.</li></ul>`;
 function openTradeWindow() {
   G.tradeWin = Trade.open(G.teams, G.userId, G.year + 1);
   G.tradeWin.news.forEach(e => G.tradeHistory.push({ ...e, year: G.year + 1 }));
@@ -1523,18 +1542,55 @@ function showSeasonTeam(id) {
   if (id === G.userId) $('#stEdit').onclick = openXIModal;
 }
 
+/* ---------------- mid-season loans ---------------- */
+const LOAN_RULES = `Open after league match ${Season.LOAN.open} until match ${Season.LOAN.close}. Players who have played <b>fewer than 2 matches</b> this season can join you on loan for the rest of the season. They then go back to their team and <b>can't play against their parent team</b>. Max ${Season.LOAN.perPair} loans from one franchise to another, and one loan per player. Salaries stay with the parent club and your purse isn't touched. Permanent trades only happen in the off-season.`;
+G.loanCat = 'ALL';
+function openLoans() {
+  const S = G.season, me = S.teams[G.userId];
+  const rows = [];
+  for (const id of S.ids) if (id !== G.userId) for (const p of S.teams[id].squad) {
+    if (G.loanCat !== 'ALL' && p.cat !== G.loanCat) continue;
+    const st = S.stats.get(p.id) || { m: 0 };
+    if (st.m >= Season.LOAN.maxMatches || S.loans.some(l => l.p === p) || (S.inj[p.id] || 0) > 0) continue;
+    rows.push({ p, id, m: st.m });
+  }
+  rows.sort((a, b) => b.p.ovr - a.p.ovr);
+  const mine = S.loans.filter(l => l.to === G.userId);
+  modal(`<h2>🤝 Mid-season loan window</h2>
+    <p class="muted" style="font-size:13px">${LOAN_RULES}</p>
+    <div class="row" style="margin:6px 0">${chip(G.userId)} <span>Squad <b>${me.squad.length}/25</b> · ✈ <b>${me.squad.filter(p => p.ovs).length}/8</b> · now after match <b>${S.idx}</b></span></div>
+    ${mine.length ? `<div class="news" style="text-align:left;max-width:none">On loan with you: ${mine.map(l => `<b>${esc(l.p.name)}</b> <span class="muted">from ${l.from}</span>`).join(', ')}</div>` : ''}
+    <div class="filters" style="margin:10px 0">${[['ALL', 'All'], ['WK', 'Keepers'], ['BAT', 'Batters'], ['AR', 'All-rounders'], ['PACE', 'Pace'], ['SPIN', 'Spin']].map(([k, l]) => `<button class="small ${G.loanCat === k ? 'on' : ''}" data-lc="${k}">${l}</button>`).join('')}</div>
+    <div class="scroll" style="max-height:420px"><table><tr><th>Team</th><th>Player</th><th>Role</th><th class="num">OVR</th><th class="num">M</th><th></th></tr>
+    ${rows.slice(0, 50).map(r => `<tr><td>${chip(r.id)}</td><td>${flag(r.p)} ${pl(r.p)}${r.p.ovs ? ' <span class="muted">✈</span>' : ''}</td><td>${roleShort(r.p)}</td><td class="num"><b>${r.p.ovr}</b></td><td class="num">${r.m}</td>
+      <td>${G.loanNo && G.loanNo[r.p.id] ? `<span class="muted" style="font-size:12px">${esc(G.loanNo[r.p.id])}</span>` : `<button class="small" data-borrow="${r.p.id}" data-from="${r.id}">Borrow</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No eligible players.</td></tr>'}</table></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button data-close>Close</button></div>`, { wide: true });
+  $$('[data-lc]').forEach(b => b.onclick = () => { G.loanCat = b.dataset.lc; openLoans(); });
+  $$('[data-borrow]').forEach(b => b.onclick = () => {
+    const from = b.dataset.from, p = S.teams[from].squad.find(x => x.id === +b.dataset.borrow);
+    const why = Season.loanCheck(S, p, from, G.userId);
+    if (why) { toast('⚠️ ' + esc(why)); return; }
+    const j = Trade.lendJudge(from, S.teams[from].squad, p, S.form);
+    if (!j.ok) { (G.loanNo = G.loanNo || {})[p.id] = j.why; openLoans(); return; }
+    Season.loan(S, p, from, G.userId);
+    closeModal(); renderSeason();
+    modal(`<h2>✅ ${esc(p.name)} joins on loan</h2><p>${chip(from)} have loaned <b>${esc(p.name)}</b> (${roleShort(p)} ${p.ovr}) to you for the rest of IPL ${S.year}. He can't play against ${from}.</p>
+      <div class="row" style="justify-content:flex-end"><button data-close>Later</button><button class="primary" id="loanXI">✏️ Pick him in my XI</button></div>`);
+    $('#loanXI').onclick = () => { closeModal(); openXIModal(); };
+  });
+}
 function openXIModal() {
-  const tm = myTeam();
+  const tm = myTeam(); G.editSeason = true;
   const backup = { ...tm.sel, xi: tm.sel.xi.slice(), batOrder: tm.sel.batOrder && tm.sel.batOrder.slice(), bowlPlan: tm.sel.bowlPlan && tm.sel.bowlPlan.slice() };
   modal(`<h2>✏️ Change your Playing XI</h2><p class="muted">Changes apply from your next match.</p><div id="selEditor"></div>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button id="xiCancel">Cancel</button><button class="primary" id="xiSave">Save XI</button></div>`, { wide: true, locked: true });
   renderSelEditor();
-  $('#xiCancel').onclick = () => { tm.sel = backup; closeModal(); };
+  $('#xiCancel').onclick = () => { tm.sel = backup; G.editSeason = false; closeModal(); };
   $('#xiSave').onclick = () => {
     const v = Engine.validateSelection(tm.sel);
     if (v.errs.length) { toast('⚠️ ' + esc(v.errs[0])); return; }
     const side = G.season.teams[G.userId];
-    side.sel = tm.sel; side.prepared = Engine.prepare(side);
+    side.sel = tm.sel; side.prepared = Engine.prepare(side); G.editSeason = false;
     closeModal(); toast('✅ XI updated for the next match'); renderSeason();
   };
 }

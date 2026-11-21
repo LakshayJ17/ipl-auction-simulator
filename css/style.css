@@ -477,3 +477,14 @@ button.mv { width: 32px; height: 30px; padding: 0; }
   .tp-h { min-width: 0; display: block; }
   .impact-box select { max-width: 100%; }
 }
+
+/* grid columns must never be stretched by wide content (tables scroll inside their panel instead) */
+.grid2 > * { min-width: 0; }
+.loanbar { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: center; align-items: center; font-size: 13px; text-align: center; }
+@media (max-width: 760px) {
+  .form span { width: 13px; height: 13px; line-height: 13px; font-size: 8px; margin-right: 1px; border-radius: 3px; }
+  .scroll table th, .scroll table td { padding: 5px 5px; }
+}
+@media (max-width: 400px) {
+  #topinfo { font-size: 11px; }
+}

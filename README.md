@@ -35,6 +35,19 @@ Open `index.html` in any browser. No install, no server, no internet needed.
    - **Match engine** (tuned against IPL 2024–25): ~190 average first innings, about a third of totals past 200, powerplay ~9.7 / middle ~8.9 / death ~11 an over, ~6.3 wickets an innings, realistic extras (wides, leg-byes, no-balls with a **free hit**), dropped catches, and an IPL-like dismissal mix.
    - **Conditions:** every venue keeps its character, but the surface varies match to match; night games can bring **dew**, which helps the chasing side and blunts spin, so captains usually bowl first.
    - **Batting brain:** new batters are vulnerable and set ones get better; teams rebuild after early wickets and launch when they have wickets in hand; chases are paced to the required rate.
+   - **Mid-season loan window (IPL playing conditions):**
+     - It opens after league match 20 and closes after match 56.
+     - From the season screen you can borrow players who have played **fewer than 2 matches** this season. They stay for the rest of the season and then go back to their club.
+     - A loaned player can't play against his parent team, and the game rests him automatically for those games.
+     - Limits: one loan per player, and at most 3 loans from one franchise to another. Salaries stay with the parent club, so your purse isn't touched.
+     - An AI club only lends a player who isn't in its XI plans (judged on form), and only if it keeps enough cover without him.
+     - Permanent trades aren't allowed during the season.
+   - **Player of the Match** is judged against how the game went:
+     - runs count for more in a low-scoring game, and strike rate and economy are measured against the match's own scoring rate;
+     - a wicket is worth more the better the batter dismissed;
+     - catches, stumpings and run-outs count, as do Super Over heroics;
+     - finishing a chase not out earns extra;
+     - being on the winning side matters. About 94% of awards go to the winning team, as in the IPL.
    - **Through the season:** players carry **form** (🔥 hot / 🥶 cold streaks), AI coaches pick their XI on form, and **injuries** rule players out for 1–5 matches (your XI gets the best stand-in from your bench for those matches only). Team news is shown above each fixture. The 200-season forecast uses the same rules.
 6. **Off-season trade window → IPL 2028, 2029, …** After the final, open the trade window, then carry your squad into the next season.
    - **When trades are allowed:** IPL trades are never made *during* an auction. The window opens a month after a season and runs until a week before the auction, then reopens after the auction until a month before the next season. Players bought at an auction can't be traded in the window straight after it. After this game's mega auction, that means trading opens in the off-season.
@@ -47,7 +60,7 @@ Open `index.html` in any browser. No install, no server, no internet needed.
 - `js/engine.js`: ball-by-ball match engine, XI selection, the toss-aware impact plan, custom batting order and bowling plan.
 - `js/auction.js`: AI valuations, bidding wars, RTM logic.
 - `js/season.js`: fixtures, points table, playoffs, stats, Monte-Carlo forecast.
-- `js/trade.js`: trade window, with legality checks, AI valuation of deals, suggested deals, AI offers and AI-to-AI trades.
+- `js/trade.js`: trade window, with legality checks, AI valuation of deals, suggested deals, AI offers, AI-to-AI trades, and AI decisions on mid-season loans.
 - `js/app.js`: UI.
 
 Edit `js/data.js` to tweak any player's ratings (`bat`, `pow`, `bowl`, `eco`, tags).

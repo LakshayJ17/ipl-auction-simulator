@@ -44,7 +44,7 @@ const Season = (() => {
 
   function create(teams, userId, year) { // teams: [{id, short, name, squad:[p], sel}]
     const S = { teams: {}, ids: [], fixtures: [], idx: 0, table: {}, stats: new Map(), playoffs: [], phase: 'league', champion: null, runnerUp: null, results: [], highlights: { hi: null, lo: null, bestBowl: null, bigWin: null },
-      userId, year: year || 2027, form: {}, inj: {}, news: [] };
+      userId, year: year || 2027, form: {}, inj: {}, news: [], loans: [] };
     for (const t of teams) {
       const side = { id: t.id, short: t.short, name: t.name, sel: t.sel, squad: t.squad, user: t.id === userId };
       side.prepared = E.prepare(side);
@@ -83,15 +83,17 @@ const Season = (() => {
     const out = { xi, impact, replaced, captain, batOrder: sel.batOrder, bowlPlan: sel.bowlPlan };
     return E.validateSelection(out).errs.length ? null : out;
   }
-  function todaysSide(S, id) {
+  // a player on loan can't play against the franchise that loaned him out
+  const loanedFrom = (S, p, id) => { const l = S.loans.find(x => x.p === p && x.to === id); return l ? l.from : null; };
+  function todaysSide(S, id, opp) {
     const side = S.teams[id];
-    const avail = side.squad.filter(p => !injured(S, p));
+    const avail = side.squad.filter(p => !injured(S, p) && !(opp && loanedFrom(S, p, id) === opp));
     let sel = side.sel;
     if (!side.user) {
       // AI coaches back their in-form players and leave out the struggling ones
       const bonus = {}; for (const p of avail) bonus[p.id] = (S.form[p.id] || 0) * 0.9;
       sel = E.autoSelect(avail, bonus);
-    } else if ([...sel.xi, sel.impact].filter(Boolean).some(p => injured(S, p))) {
+    } else if ([...sel.xi, sel.impact].filter(Boolean).some(p => !avail.includes(p))) {
       sel = patchSel(sel, avail) || E.autoSelect(avail);
     }
     if (sel === side.sel) return side;
@@ -126,6 +128,34 @@ const Season = (() => {
   }
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const pick = a => a[Math.floor(rand() * a.length)];
+
+  /* -------- mid-season loan window (IPL playing conditions) --------
+     Opens after league match 20 and closes after match 56. Only players who have played fewer than
+     2 matches this season can move, on loan for the rest of the season (then they go back).
+     A franchise can loan at most 3 players to any one franchise, a player is loaned once a season,
+     and a loaned player can't play against his parent team. Permanent trades aren't allowed in-season. */
+  const LOAN = { open: 20, close: 56, perPair: 3, maxMatches: 2 };
+  const loanWindow = S => S.phase === 'league' && S.idx >= LOAN.open && S.idx <= LOAN.close;
+  function loanCheck(S, p, from, to) {
+    if (!loanWindow(S)) return S.phase === 'league' && S.idx < LOAN.open ? `The loan window opens after league match ${LOAN.open}.` : 'The loan window is closed for this season.';
+    const A = S.teams[from], B = S.teams[to];
+    if (!A || !B || from === to) return 'Pick another franchise.';
+    if (!A.squad.includes(p)) return `${p.name} isn't in ${A.short}'s squad.`;
+    if (S.loans.some(l => l.p === p)) return `${p.name} has already been loaned this season.`;
+    const m = (S.stats.get(p.id) || { m: 0 }).m;
+    if (m >= LOAN.maxMatches) return `${p.name} has played ${m} matches this season. Only players with fewer than ${LOAN.maxMatches} can be loaned.`;
+    if (injured(S, p)) return `${p.name} is injured.`;
+    if (S.loans.filter(l => l.from === from && l.to === to).length >= LOAN.perPair) return `${A.short} have already loaned ${LOAN.perPair} players to ${B.short} this season.`;
+    if (B.squad.length >= 25) return `${B.short} already have 25 players.`;
+    if (p.ovs && B.squad.filter(x => x.ovs).length >= 8) return `${B.short} already have 8 overseas players.`;
+    return null;
+  }
+  function loan(S, p, from, to) {
+    const A = S.teams[from], B = S.teams[to];
+    A.squad = A.squad.filter(x => x !== p); B.squad = B.squad.concat([p]); // new arrays: the permanent squads are untouched
+    S.loans.push({ p, from, to, after: S.idx });
+    const st = S.stats.get(p.id); if (st) st.team = to;
+  }
 
   function nrr(r) { return (r.bf ? r.rf / (r.bf / 6) : 0) - (r.ba ? r.ra / (r.ba / 6) : 0); }
   function standings(S) {
@@ -178,7 +208,7 @@ const Season = (() => {
   }
 
   function play(S, fx, detailed, light) {
-    const H = todaysSide(S, fx.home), A = todaysSide(S, fx.away);
+    const H = todaysSide(S, fx.home, fx.away), A = todaysSide(S, fx.away, fx.home);
     const v = fx.stage === 'League' || fx.stage === 'Qualifier 1' || fx.stage === 'Eliminator' ? TINFO[fx.home] : FINAL_VENUE;
     const res = E.playMatch(H, A, { pitch: v.pitch, detailed, neutral: fx.stage !== 'League', formBase: S.form });
     res.venue = v.venue; res.no = fx.no; res.stage = fx.stage;
@@ -271,7 +301,7 @@ const Season = (() => {
     return Object.values(out).map(o => ({ id: o.id, avgPos: o.pos / n, avgPts: o.pts / n, top4: o.top4 / n, title: o.title / n })).sort((a, b) => a.avgPos - b.avgPos);
   }
 
-  return { create, playNext, nextFixture, standings, nrr, leaders, mvpPts, finishFor, forecast, ordinal, teamNews, TINFO, FINAL_VENUE };
+  return { create, playNext, nextFixture, standings, nrr, leaders, mvpPts, finishFor, forecast, ordinal, teamNews, loanWindow, loanCheck, loan, LOAN, TINFO, FINAL_VENUE };
 })();
 
 if (typeof module !== 'undefined' && typeof window === 'undefined') module.exports = Season;

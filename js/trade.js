@@ -119,6 +119,19 @@ const Trade = (() => {
     if (s.bowlPlan) s.bowlPlan = s.bowlPlan.map(id => T.squad.some(p => p.id === id) ? id : null);
   }
 
+  // mid-season loans: will an AI club lend this player out for the rest of the season?
+  // Only if he isn't in their plans and they keep enough cover without him.
+  function lendJudge(teamId, squad, p, form) {
+    // the XI their coach would pick today (form counts, as in the season)
+    const bonus = {}; if (form) for (const x of squad) bonus[x.id] = (form[x.id] || 0) * 0.9;
+    const sel = E.autoSelect(squad, bonus);
+    if (sel.xi.includes(p) || sel.impact === p) return { ok: false, why: `${p.name} is in their XI plans, so they want him for the run-in.` };
+    const loss = strength(squad).score - strength(squad.filter(x => x !== p)).score;
+    const mood = TINFO[teamId] ? TINFO[teamId].persona.rtm : 1;
+    if (loss > 1.2 / mood) return { ok: false, why: `They need ${p.name} as cover for their ${p.cat === 'PACE' ? 'pace attack' : p.cat === 'SPIN' ? 'spinners' : p.cat === 'WK' ? 'keeper' : p.cat === 'AR' ? 'all-rounders' : 'batting'}.` };
+    return { ok: true, why: `${TINFO[teamId] ? TINFO[teamId].short : teamId} agree to the loan.` };
+  }
+
   /* ---------------- deal finding ---------------- */
   const free = (win, T) => T.squad.filter(p => !win.moved.has(p.id));
   // the user wants `want` from team bId: what would they take for it?
@@ -193,7 +206,7 @@ const Trade = (() => {
   }
   function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
-  return { open, check, propose, execute, suggest, aiOffers, salary, strength, mv, fixSel, consts: { MAX_SQUAD, MIN_SQUAD, MAX_OVS } };
+  return { open, check, propose, execute, suggest, aiOffers, lendJudge, salary, strength, mv, fixSel, consts: { MAX_SQUAD, MIN_SQUAD, MAX_OVS } };
 })();
 
 if (typeof module !== 'undefined' && typeof window === 'undefined') module.exports = Trade;
